@@ -71,6 +71,32 @@ python examples/mixed_precision_experiment_matrix.py \
   --json-out mp_matrix.json
 ```
 
+## One-Command Multi-Sweep Driver
+
+To run all suggested follow-up sweeps (scale, beta, discretization, seed) and get one consolidated summary:
+
+```bash
+python examples/run_mixed_precision_sweeps.py --device cuda
+```
+
+This creates a timestamped output folder under `examples/sweep_outputs/` containing:
+
+- per-run logs and raw outputs
+- `consolidated_results.csv/json` (one row per config per run)
+- `best_by_run.csv/json` (recommended config for each run)
+
+Quick preview without running:
+
+```bash
+python examples/run_mixed_precision_sweeps.py --device cuda --dry-run
+```
+
+Run only selected sections:
+
+```bash
+python examples/run_mixed_precision_sweeps.py --device cuda --sections beta seed
+```
+
 ## Command-Line Arguments
 
 Core run controls:
@@ -129,4 +155,3 @@ Practical guidance:
 - Final production choice should be confirmed on your real task/dataset.
 - TF32 is disabled for cleaner precision comparisons.
 - The script keeps running even if one config errors; failing rows are marked in `status`.
-
