@@ -31,6 +31,76 @@ Why this setup:
 - makes runs fast and reproducible
 - provides a stable fp32 reference for quality comparison
 
+## Mathematical Setup
+
+Let $x \in \mathbb{R}^d$ be an input sampled from a standard normal distribution:
+
+$$
+x \sim \mathcal{N}(0, I_d)
+$$
+
+Both teacher and student use a fractional dynamics block of the form:
+
+$$
+D_t^\beta z(t) = f_\theta(t, z(t)), \qquad z(0) = x,\qquad 0 < \beta \le 1
+$$
+
+where $D_t^\beta$ is the fractional derivative used by the selected `torchfde` solver method.
+
+### Teacher Mapping (target generator)
+
+The teacher defines a fixed mapping $g_T$:
+
+$$
+z_T(T) = \Phi_T(x; \theta_T, \beta),\qquad
+y^\* = h_T(z_T(T))
+$$
+
+- $\Phi_T$ is computed with direct `fdeint` (default `--teacher-method predictor`).
+- $h_T$ is a linear head.
+- Teacher parameters $(\theta_T, h_T)$ are frozen; no teacher optimization is performed.
+
+### Student Mapping (trained model)
+
+The student defines:
+
+$$
+z_S(T) = \Phi_S(x; \theta_S, \beta),\qquad
+\hat y = h_S(z_S(T))
+$$
+
+- $\Phi_S$ is computed with `fdeint_adjoint` (default `--adjoint-method predictor-f`).
+- Backpropagation is through the adjoint implementation under each precision/scaler configuration.
+
+### Objective
+
+The benchmark trains the student by minimizing mean-squared error against teacher targets:
+
+$$
+\mathcal{L}(\theta_S, h_S) =
+\frac{1}{N}\sum_{i=1}^{N}\left\|\hat y_i - y^\*_i\right\|_2^2
+$$
+
+This makes the learned task "approximate the teacher function" in a controlled synthetic setting, so precision effects can be compared cleanly.
+
+## Teacher and Student Implementation in Code
+
+- **Teacher vector field**: `FractionalVectorField` (MLP: Linear -> Tanh -> Linear)
+- **Teacher model**: `TeacherModel`
+  - Solves the fractional system with `fdeint`
+  - Generates `y_train`/`y_val` targets once
+  - Is put in `eval()` mode and frozen (`requires_grad_(False)`)
+
+- **Student model**: `FractionalRegressor`
+  - Uses the same vector-field class shape, but separate trainable parameters
+  - Solves with `fdeint_adjoint`
+  - Applies a trainable linear head
+  - Is optimized with AdamW on MSE loss
+
+- **What changes across rows in the final table**
+  - Precision/autocast dtype and loss-scaler policy
+  - Not the dataset, architecture dimensions, or optimizer hyperparameters (unless you explicitly change CLI args)
+
 ## Configurations Tested
 
 The script automatically runs:
