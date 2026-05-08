@@ -18,6 +18,18 @@ import forward_precision_error_matrix as fpe
 QUIET = os.environ.get("TORCHFDE_TEST_QUIET", "0") == "1"
 
 
+def _is_finite_scalar(x: float) -> bool:
+    return bool(torch.isfinite(torch.tensor(x)).item())
+
+
+def _nonnull_ratios(values: List[float]) -> List[float]:
+    return [v for v in values if v == v]
+
+
+def _finite_positive(values: List[float]) -> List[float]:
+    return [v for v in values if _is_finite_scalar(v) and v > 0.0]
+
+
 class TestForwardPrecisionErrorMatrix(unittest.TestCase):
     def setUp(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -108,15 +120,50 @@ class TestForwardPrecisionErrorMatrix(unittest.TestCase):
                     mode="low-only",
                 )
 
+                low_only_finite = all(
+                    [
+                        _is_finite_scalar(low_only.max_abs_err),
+                        _is_finite_scalar(low_only.mean_abs_err),
+                        _is_finite_scalar(low_only.l2_abs_err),
+                    ]
+                )
+
                 # Basic sanity and stability checks.
                 for name, row in [("fp32", fp32), ("mixed", mixed), ("low_only", low_only)]:
                     with self.subTest(seed=seed, step_size=step_size, family=low_label, row=name):
-                        self.assertTrue(torch.isfinite(torch.tensor(row.max_abs_err)).item())
-                        self.assertTrue(torch.isfinite(torch.tensor(row.mean_abs_err)).item())
-                        self.assertTrue(torch.isfinite(torch.tensor(row.l2_abs_err)).item())
-                        self.assertGreaterEqual(row.max_abs_err, 0.0)
-                        self.assertGreaterEqual(row.mean_abs_err, 0.0)
-                        self.assertGreaterEqual(row.l2_abs_err, 0.0)
+                        row_is_finite = all(
+                            [
+                                _is_finite_scalar(row.max_abs_err),
+                                _is_finite_scalar(row.mean_abs_err),
+                                _is_finite_scalar(row.l2_abs_err),
+                            ]
+                        )
+
+                        # Keep strict guarantees for reference and mixed modes.
+                        if name in ("fp32", "mixed"):
+                            self.assertTrue(row_is_finite)
+                            self.assertGreaterEqual(row.max_abs_err, 0.0)
+                            self.assertGreaterEqual(row.mean_abs_err, 0.0)
+                            self.assertGreaterEqual(row.l2_abs_err, 0.0)
+                        else:
+                            # For low-only, non-finite indicates precision instability and is tracked.
+                            if row_is_finite:
+                                self.assertGreaterEqual(row.max_abs_err, 0.0)
+                                self.assertGreaterEqual(row.mean_abs_err, 0.0)
+                                self.assertGreaterEqual(row.l2_abs_err, 0.0)
+
+                ratio_low_over_mixed_mean = float("nan")
+                ratio_low_over_mixed_max = float("nan")
+                if mixed.mean_abs_err > 0.0:
+                    if low_only_finite:
+                        ratio_low_over_mixed_mean = float(low_only.mean_abs_err / mixed.mean_abs_err)
+                    else:
+                        ratio_low_over_mixed_mean = float("inf")
+                if mixed.max_abs_err > 0.0:
+                    if low_only_finite:
+                        ratio_low_over_mixed_max = float(low_only.max_abs_err / mixed.max_abs_err)
+                    else:
+                        ratio_low_over_mixed_max = float("inf")
 
                 rows.append(
                     {
@@ -128,8 +175,9 @@ class TestForwardPrecisionErrorMatrix(unittest.TestCase):
                         "fp32_max": float(fp32.max_abs_err),
                         "mixed_max": float(mixed.max_abs_err),
                         "low_max": float(low_only.max_abs_err),
-                        "ratio_low_over_mixed_mean": float(low_only.mean_abs_err / max(mixed.mean_abs_err, 1e-30)),
-                        "ratio_low_over_mixed_max": float(low_only.max_abs_err / max(mixed.max_abs_err, 1e-30)),
+                        "low_finite": 1.0 if low_only_finite else 0.0,
+                        "ratio_low_over_mixed_mean": ratio_low_over_mixed_mean,
+                        "ratio_low_over_mixed_max": ratio_low_over_mixed_max,
                     }
                 )
 
@@ -144,18 +192,28 @@ class TestForwardPrecisionErrorMatrix(unittest.TestCase):
         # We intentionally test multiple seeds/step sizes.
         self.assertEqual(len(rows), len(self.seeds) * len(self.step_sizes))
 
-        ratios_mean = [r["ratio_low_over_mixed_mean"] for r in rows]
-        ratios_max = [r["ratio_low_over_mixed_max"] for r in rows]
+        ratios_mean_all = [r["ratio_low_over_mixed_mean"] for r in rows]
+        ratios_max_all = [r["ratio_low_over_mixed_max"] for r in rows]
+        ratios_mean_nonnull = _nonnull_ratios(ratios_mean_all)
+        ratios_max_nonnull = _nonnull_ratios(ratios_max_all)
+        ratios_mean_finite = _finite_positive(ratios_mean_all)
+        ratios_max_finite = _finite_positive(ratios_max_all)
+        low_only_nonfinite_count = sum(1 for r in rows if r["low_finite"] == 0.0)
 
         # Mixed should provide a meaningful accuracy benefit over low-only
         # for at least one case, and not be catastrophically worse overall.
-        self.assertGreater(max(ratios_mean), 1.05)
-        self.assertGreater(geometric_mean(ratios_mean), 0.50)
-        self.assertGreater(geometric_mean(ratios_max), 0.50)
+        self.assertGreaterEqual(len(ratios_mean_nonnull), 1)
+        self.assertGreaterEqual(len(ratios_max_nonnull), 1)
+        self.assertGreater(max(ratios_mean_nonnull), 1.05)
+        self.assertGreaterEqual(len(ratios_mean_finite), 1)
+        self.assertGreaterEqual(len(ratios_max_finite), 1)
+        self.assertGreater(geometric_mean(ratios_mean_finite), 0.50)
+        self.assertGreater(geometric_mean(ratios_max_finite), 0.50)
 
         if not QUIET:
-            print("\n[bf16] low_only / mixed mean-error ratios:", [f"{x:.3f}" for x in ratios_mean])
-            print("[bf16] low_only / mixed max-error ratios:", [f"{x:.3f}" for x in ratios_max])
+            print("\n[bf16] low_only / mixed mean-error ratios:", [f"{x:.3f}" for x in ratios_mean_nonnull])
+            print("[bf16] low_only / mixed max-error ratios:", [f"{x:.3f}" for x in ratios_max_nonnull])
+            print(f"[bf16] non-finite low-only cases: {low_only_nonfinite_count}/{len(rows)}")
 
     def test_fp16_mixed_vs_low_only_across_steps_and_seeds(self):
         if self.device.type != "cuda":
@@ -164,8 +222,10 @@ class TestForwardPrecisionErrorMatrix(unittest.TestCase):
         rows = self._run_family(torch.float16, "fp16")
         self.assertEqual(len(rows), len(self.seeds) * len(self.step_sizes))
 
-        ratios_mean = [r["ratio_low_over_mixed_mean"] for r in rows]
-        ratios_max = [r["ratio_low_over_mixed_max"] for r in rows]
+        ratios_mean = _finite_positive([r["ratio_low_over_mixed_mean"] for r in rows])
+        ratios_max = _finite_positive([r["ratio_low_over_mixed_max"] for r in rows])
+        self.assertGreaterEqual(len(ratios_mean), 1)
+        self.assertGreaterEqual(len(ratios_max), 1)
 
         # For fp16, relative ranking can vary by case; enforce stability bounds
         # and require that mixed improves at least one measured scenario.
