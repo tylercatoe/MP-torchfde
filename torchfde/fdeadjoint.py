@@ -1,13 +1,131 @@
 import torch
 import math
 import torch.nn as nn
+from typing import Any, Optional, Tuple, Union, Literal, Type
 from .utils_fde import _flatten, _flatten_convert_none_to_zeros,_check_inputs, _flat_to_shape
 from .utils_fde import _addmul_inplace, _mul_inplace, _minusmul_inplace
 from .utils_fde import _is_tuple, _clone, _add, _multiply, _minus, ReversedListView
 from . import config
 
+ScalerType = Union["DynamicScaler", None, Literal[False]]
 
-def fdeint_adjoint(func,y0,beta,t,step_size,method,options=None):
+
+def _is_any_infinite(x: Union[torch.Tensor, tuple, list, None]) -> bool:
+    """Recursively check if any tensor contains inf or NaN."""
+    if x is None:
+        return False
+    if isinstance(x, torch.Tensor):
+        return not x.isfinite().all().item()
+    if isinstance(x, (list, tuple)):
+        return any(_is_any_infinite(elem) for elem in x)
+    return False
+
+
+class DynamicScaler:
+    """Dynamic loss scaler for mixed-precision adjoint backpropagation."""
+
+    def __init__(
+        self,
+        dtype_low: torch.dtype,
+        target_factor: Optional[float] = None,
+        increase_factor: float = 2.0,
+        decrease_factor: float = 0.5,
+        max_attempts: int = 50,
+        delta: float = 0,
+        verbose: bool = False,
+    ):
+        self.dtype_low = dtype_low
+        self.eps = torch.finfo(dtype_low).eps
+        self.target = target_factor if target_factor is not None else 1.0 / self.eps
+        self.increase_factor = increase_factor
+        self.decrease_factor = decrease_factor
+        self.max_attempts = max_attempts
+        self.delta = delta
+        self.is_initialized = False
+        self.S: Optional[float] = None
+        self.__name__ = "DynamicScaler"
+        self.verbose = verbose
+        self.scale_history = []
+
+    def init_scaling(self, a: torch.Tensor) -> None:
+        if not a.isfinite().all() or a.isnan().any():
+            n_inf = torch.isinf(a).sum().item()
+            n_nan = torch.isnan(a).sum().item()
+            raise ValueError(
+                f"Input tensor contains non-finite values: {n_inf} inf, {n_nan} nan (shape: {a.shape})"
+            )
+
+        target = self.target / math.sqrt(max(1.0, a.numel() / max(1, a.shape[0])))
+        a_max = a.abs().max()
+        self.S = target / (a_max + self.delta).to(torch.float32)
+        self.S = 2 ** (torch.round(torch.log2(self.S))).item()
+
+        initial_S = self.S
+        for _ in range(20):
+            if (self.S * a).isfinite().all():
+                break
+            self.S *= 0.5
+        else:
+            raise RuntimeError(
+                f"Scaler failed to find finite scale after 20 steps for {a.shape} with ||a||_inf = {a.abs().max()}."
+            )
+
+        if self.verbose and self.S != initial_S:
+            print(f"[DynamicScaler] Adjusted initial scale from {initial_S:.3e} to {self.S:.3e}")
+
+        self.is_initialized = True
+        self.scale_history.append(("init", self.S))
+
+    def update_on_overflow(self) -> None:
+        old_S = self.S
+        self.S *= self.decrease_factor
+        if self.verbose:
+            print(f"[DynamicScaler] Overflow detected: scale reduced from {old_S:.6e} to {self.S:.6e}")
+        self.scale_history.append(("overflow", self.S))
+
+    def check_for_increase(self, a: torch.Tensor) -> bool:
+        a_max = a.abs().max()
+        return (a_max / self.target).item() < 0.5
+
+    def update_on_small_grad(self) -> None:
+        old_S = self.S
+        self.S *= self.increase_factor
+        if self.verbose:
+            print(f"[DynamicScaler] Small gradient: scale increased from {old_S:.6e} to {self.S:.6e}")
+        self.scale_history.append(("increase", self.S))
+
+
+def _select_adjoint_solver(
+    loss_scaler: ScalerType,
+    precision: torch.dtype,
+) -> Tuple[Type[torch.autograd.Function], Optional[DynamicScaler]]:
+    """
+    Select an adjoint backend following the same high-level policy as rampde:
+      - DynamicScaler => dynamic scaling backend
+      - None + stable precision => unscaled backend
+      - None + float16 => auto-create DynamicScaler and use dynamic backend
+      - False + float16 => unscaled safe backend
+    """
+    if loss_scaler is False:
+        loss_scaler = None
+        if precision == torch.float16:
+            return FDEAdjointMethodUnscaledSafe, loss_scaler
+
+    elif loss_scaler is None:
+        dtype_low = torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled() else precision
+        if dtype_low == torch.float16:
+            loss_scaler = DynamicScaler(dtype_low=dtype_low)
+
+    if isinstance(loss_scaler, DynamicScaler):
+        return FDEAdjointMethodDynamic, loss_scaler
+    if loss_scaler is None:
+        if precision in [torch.float32, torch.bfloat16, torch.float64]:
+            return FDEAdjointMethodUnscaled, loss_scaler
+        return FDEAdjointMethodUnscaledSafe, loss_scaler
+    return FDEAdjointMethodUnscaledSafe, loss_scaler
+
+
+def fdeint_adjoint(func, y0, beta, t, step_size, method, options=None, loss_scaler: ScalerType = None):
 
     # We need this in order to access the variables inside this module,
     # since we have no other way of getting variables along the execution path.
@@ -36,16 +154,19 @@ def fdeint_adjoint(func,y0,beta,t,step_size,method,options=None):
     if options is None:
         options = {}
 
-    # # Solve using adjoint method
-    # flat_params = _flatten(func.parameters())
-    # solution = FDEAdjointMethod.apply(*y0, func, beta, tspan, flat_params, method, options)
-
     # Get parameters
     params = find_parameters(func)
     n_state = len(y0)
     n_params = len(params)
-    # Call FDEAdjointMethod with parameters
-    solution = FDEAdjointMethod.apply(func, n_state, n_params, *y0, beta, tspan, method, *params, options)
+
+    # Determine precision and select adjoint backend
+    precision = torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled() else y0[0].dtype
+    adjoint_solver, loss_scaler = _select_adjoint_solver(loss_scaler, precision)
+
+    # Call selected adjoint backend
+    solution = adjoint_solver.apply(
+        func, n_state, n_params, loss_scaler, *y0, beta, tspan, method, *params, options
+    )
 
     # Post-process solution based on tensor mode
     if config.TENSOR_MODE == 'concat':
@@ -69,158 +190,271 @@ def fdeint_adjoint(func,y0,beta,t,step_size,method,options=None):
 
     return solution
 
-class FDEAdjointMethod(torch.autograd.Function):
+def _parse_adjoint_args(n_state: int, n_params: int, args: tuple):
+    y0_tuple = tuple(args[:n_state])
+    beta = args[n_state]
+    tspan = args[n_state + 1]
+    method = args[n_state + 2]
+    func_params = tuple(args[n_state + 3 : n_state + 3 + n_params])
+    options = args[n_state + 3 + n_params]
+    return y0_tuple, beta, tspan, method, func_params, options
 
-    @staticmethod
-    def forward(ctx, func, n_state, n_params, *args):
-        # n_state, n_params are Python ints (not Tensors); their gradients should return None
-        n_state = int(n_state)
-        n_params = int(n_params)
 
-        # Parse positional arguments: y0_1,...,y0_n, beta, tspan, method, p1,...,pm, options
-        y0_tuple = tuple(args[:n_state])                               # Tensors
-        beta = args[n_state]                                           # Tensor or float
-        tspan = args[n_state + 1]                                      # Tensor
-        method = args[n_state + 2]                                     # str/enum (not Tensor)
-        func_params = tuple(args[n_state + 3 : n_state + 3 + n_params])  # Tensors (Parameters)
-        options = args[n_state + 3 + n_params]                         # dict
+def _backward_none_tuple(ctx):
+    n_state = ctx.n_state
+    n_params = ctx.n_params
+    grads = []
+    grads.append(None)  # func
+    grads.append(None)  # n_state
+    grads.append(None)  # n_params
+    grads.append(None)  # loss_scaler
+    grads.extend([None] * n_state)  # y0_1,...,y0_n
+    grads.append(None)  # beta
+    grads.append(None)  # tspan
+    grads.append(None)  # method
+    grads.extend([None] * n_params)  # params
+    grads.append(None)  # options
+    return tuple(grads)
 
-        with torch.no_grad():
-            ans, yhistory = SOLVERS_Forward[method](func=func, y0=y0_tuple, beta=beta, tspan=tspan, **options)
 
-        # Check if gradients needed
-        y0_needs_grad = any(t.requires_grad for t in y0_tuple)
-        params_need_grad = any(p.requires_grad for p in func_params) if func_params else False
+def _cleanup_ctx(ctx):
+    for name in (
+        "ans",
+        "yhistory",
+        "func",
+        "func_params",
+        "beta",
+        "method",
+        "loss_scaler",
+        "options",
+        "_grad_output",
+    ):
+        if hasattr(ctx, name):
+            delattr(ctx, name)
 
-        ctx.n_state = n_state
-        ctx.n_params = n_params
-        if y0_needs_grad or params_need_grad:
-            ctx.save_for_backward(tspan)
-            ctx.ans = ans
-            ctx.yhistory = yhistory
-            ctx.func = func
-            ctx.beta = beta
-            ctx.method = method
-            ctx.func_params = func_params
+
+def _forward_impl(ctx, func, n_state, n_params, loss_scaler, *args):
+    n_state = int(n_state)
+    n_params = int(n_params)
+    y0_tuple, beta, tspan, method, func_params, options = _parse_adjoint_args(n_state, n_params, args)
+
+    with torch.no_grad():
+        ans, yhistory = SOLVERS_Forward[method](func=func, y0=y0_tuple, beta=beta, tspan=tspan, **options)
+
+    y0_needs_grad = any(t.requires_grad for t in y0_tuple)
+    params_need_grad = any(p.requires_grad for p in func_params) if func_params else False
+
+    ctx.n_state = n_state
+    ctx.n_params = n_params
+    if y0_needs_grad or params_need_grad:
+        ctx.save_for_backward(tspan)
+        ctx.ans = ans
+        ctx.yhistory = yhistory
+        ctx.func = func
+        ctx.beta = beta
+        ctx.method = method
+        ctx.func_params = func_params
+        ctx.loss_scaler = loss_scaler
+        ctx.options = options
+    else:
+        del yhistory
+    return ans
+
+
+def _build_augmented_dynamics(func, n_tensors, func_params, scale: Optional[float] = None, check_finite: bool = False):
+    class AugDynamics:
+        def __init__(self, func_, n_tensors_, func_params_, scale_, check_finite_):
+            self.func = func_
+            self.n_tensors = n_tensors_
+            self.f_params = func_params_
+            self.scale = scale_
+            self.check_finite = check_finite_
+
+        def __call__(self, t, y_aug):
+            y, adj_y, adj_params = y_aug
+
+            with torch.set_grad_enabled(True):
+                y = tuple(y_.detach().requires_grad_(True) for y_ in y)
+                func_eval = self.func(t, y)
+
+                if self.scale is None:
+                    grad_outputs = tuple(adj_y)
+                else:
+                    grad_outputs = tuple(self.scale * adj_y_ for adj_y_ in adj_y)
+
+                if self.check_finite and _is_any_infinite((func_eval, grad_outputs)):
+                    raise OverflowError("Non-finite values detected before VJP computation.")
+
+                vjp_y_and_params = torch.autograd.grad(
+                    func_eval,
+                    y + self.f_params,
+                    grad_outputs,
+                    allow_unused=True,
+                    retain_graph=False,
+                    create_graph=False,
+                )
+
+            vjp_y = vjp_y_and_params[:self.n_tensors]
+            vjp_params = vjp_y_and_params[self.n_tensors:]
+
+            if self.scale is not None:
+                inv_scale = 1.0 / self.scale
+                vjp_y = tuple(None if v is None else inv_scale * v for v in vjp_y)
+                vjp_params = tuple(None if v is None else inv_scale * v for v in vjp_params)
+
+            vjp_y = tuple(
+                torch.zeros_like(y_) if vjp_y_ is None else vjp_y_
+                for vjp_y_, y_ in zip(vjp_y, y)
+            )
+            vjp_params = tuple(
+                torch.zeros_like(p) if vp is None else vp
+                for vp, p in zip(vjp_params, self.f_params)
+            )
+
+            if self.check_finite and _is_any_infinite((vjp_y, vjp_params)):
+                raise OverflowError("Non-finite values detected in VJP outputs.")
+
+            return (func_eval, vjp_y, vjp_params)
+
+    return AugDynamics(func, n_tensors, func_params, scale, check_finite)
+
+
+def _run_adjoint_solver(ctx, scale: Optional[float], check_finite: bool):
+    tspan = ctx.saved_tensors[0]
+    ans = tuple(ctx.ans)
+    yhistory = ctx.yhistory
+    func = ctx.func
+    beta = ctx.beta
+    method = ctx.method
+    func_params = ctx.func_params
+    n_tensors = ctx.n_state
+    options = getattr(ctx, "options", {})
+
+    tspan_flip = tspan.flip(0)
+    yhistory_flip = ReversedListView(yhistory) if yhistory is not None else None
+    augmented_dynamics = _build_augmented_dynamics(
+        func, n_tensors, func_params, scale=scale, check_finite=check_finite
+    )
+
+    with torch.no_grad():
+        grad_output = tuple(
+            torch.zeros_like(ans_i) if go is None else go
+            for ans_i, go in zip(ans, ctx._grad_output)
+        )
+        if func_params:
+            adj_params = tuple(torch.zeros_like(p) for p in func_params)
         else:
-            del yhistory
+            adj_params = ()
+        aug_y0 = (ans, grad_output, adj_params)
+        adj_y, adj_params = SOLVERS_Backward[method](
+            augmented_dynamics,
+            aug_y0,
+            beta,
+            tspan_flip,
+            yhistory_flip,
+            **options,
+        )
 
-        return ans
+    return adj_y, adj_params
+
+
+def _backward_impl(ctx, grad_output, mode: str):
+    if not hasattr(ctx, "yhistory"):
+        return _backward_none_tuple(ctx)
+
+    ctx._grad_output = grad_output
+
+    if mode == "unscaled":
+        adj_y, adj_params = _run_adjoint_solver(ctx, scale=None, check_finite=False)
+
+    elif mode == "dynamic":
+        scaler = ctx.loss_scaler
+        if scaler is None:
+            dtype_low = torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled() else ctx.ans[0].dtype
+            scaler = DynamicScaler(dtype_low=dtype_low)
+            ctx.loss_scaler = scaler
+
+        flat_grad = _flatten(tuple(
+            torch.zeros_like(ctx.ans[i]) if g is None else g for i, g in enumerate(grad_output)
+        ))
+        if scaler.S is None:
+            scaler.init_scaling(flat_grad)
+
+        # Optional parameter dtype conversion to mirror rampde dynamic backend.
+        dtype_low = torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled() else flat_grad.dtype
+        old_params = {name: p.data.clone() for name, p in ctx.func.named_parameters()}
+        for _, p in ctx.func.named_parameters():
+            p.data = p.data.to(dtype_low)
+
+        try:
+            attempts = 0
+            while attempts < scaler.max_attempts:
+                try:
+                    adj_y, adj_params = _run_adjoint_solver(ctx, scale=scaler.S, check_finite=True)
+                    if _is_any_infinite((adj_y, adj_params)):
+                        raise OverflowError("Non-finite values detected after adjoint solve.")
+                    break
+                except OverflowError:
+                    scaler.update_on_overflow()
+                    attempts += 1
+            else:
+                raise RuntimeError(
+                    f"Reached maximum number of {scaler.max_attempts} attempts in dynamic adjoint backward."
+                )
+
+            if scaler.check_for_increase(_flatten(adj_y)):
+                scaler.update_on_small_grad()
+        finally:
+            for name, p in ctx.func.named_parameters():
+                p.data = old_params[name].data
+
+    elif mode == "safe":
+        try:
+            adj_y, adj_params = _run_adjoint_solver(ctx, scale=None, check_finite=True)
+            if _is_any_infinite((adj_y, adj_params)):
+                raise OverflowError("Non-finite values detected after adjoint solve.")
+        except OverflowError:
+            adj_y = tuple(torch.full_like(a_i, float("inf")) for a_i in ctx.ans)
+            adj_params = tuple(torch.full_like(p, float("inf")) for p in ctx.func_params)
+    else:
+        raise ValueError(f"Unknown adjoint backward mode: {mode}")
+
+    _cleanup_ctx(ctx)
+    return None, None, None, None, *adj_y, None, None, None, *adj_params, None
+
+
+class FDEAdjointMethodUnscaled(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, func, n_state, n_params, loss_scaler, *args):
+        return _forward_impl(ctx, func, n_state, n_params, loss_scaler, *args)
 
     @staticmethod
     def backward(ctx, *grad_output):
-
-        """
-        Backward pass - 计算梯度
-        """
-        # 早退：不需要反传时，返回正确数量的 None
-        if not hasattr(ctx, 'yhistory'):
-            n_state = ctx.n_state
-            n_params = ctx.n_params
-            grads = []
-            grads.append(None)  # ode_func
-            grads.append(None)  # n_state
-            grads.append(None)  # n_params
-            grads.extend([None] * n_state)  # y0_1,...,y0_n
-            grads.append(None)  # beta
-            grads.append(None)  # t_grid
-            grads.append(None)  # method
-            grads.extend([None] * n_params)  # p1,...,pm
-            grads.append(None)  # memory
-            return tuple(grads)
+        return _backward_impl(ctx, grad_output, mode="unscaled")
 
 
-        tspan = ctx.saved_tensors[0]
-        ans = ctx.ans
-        yhistory = ctx.yhistory
-        ans = tuple(ans)
-        func = ctx.func
-        beta = ctx.beta
-        method = ctx.method
-        func_params = ctx.func_params
-        n_tensors = ctx.n_state
+class FDEAdjointMethodDynamic(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, func, n_state, n_params, loss_scaler, *args):
+        return _forward_impl(ctx, func, n_state, n_params, loss_scaler, *args)
 
-        # Create AugDynamics class similar to first file
-        class AugDynamics:
-            def __init__(self, func, n_tensors, func_params):
-                self.func = func
-                self.n_tensors = n_tensors
-                self.f_params = func_params
+    @staticmethod
+    def backward(ctx, *grad_output):
+        return _backward_impl(ctx, grad_output, mode="dynamic")
 
-            def __call__(self, t, y_aug):
-                y, adj_y, adj_params = y_aug
 
-                with torch.set_grad_enabled(True):
-                    # detach and set requires_grad
-                    y = tuple(y_.detach().requires_grad_(True) for y_ in y)
-                    func_eval = self.func(t, y)
+class FDEAdjointMethodUnscaledSafe(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, func, n_state, n_params, loss_scaler, *args):
+        return _forward_impl(ctx, func, n_state, n_params, loss_scaler, *args)
 
-                    # Compute VJP
-                    vjp_y_and_params = torch.autograd.grad(
-                        func_eval,
-                        y + self.f_params,
-                        tuple(adj_y),
-                        allow_unused=True,
-                        retain_graph=False,
-                        create_graph=False
-                    )
+    @staticmethod
+    def backward(ctx, *grad_output):
+        return _backward_impl(ctx, grad_output, mode="safe")
 
-                vjp_y = vjp_y_and_params[:self.n_tensors]
-                vjp_params = vjp_y_and_params[self.n_tensors:]
 
-                # Handle None gradients
-                vjp_y = tuple(
-                    torch.zeros_like(y_) if vjp_y_ is None else vjp_y_
-                    for vjp_y_, y_ in zip(vjp_y, y)
-                )
-
-                vjp_params = tuple(
-                    torch.zeros_like(p) if vp is None else vp
-                    for vp, p in zip(vjp_params, self.f_params)
-                )
-
-                return (func_eval, vjp_y, vjp_params)
-
-        augmented_dynamics = AugDynamics(func, n_tensors, func_params)
-        tspan_flip = tspan.flip(0)
-
-        if yhistory is not None:
-            yhistory_flip = ReversedListView(yhistory)
-        else:
-            yhistory_flip = None
-
-        with torch.no_grad():
-            adj_y = grad_output
-
-            # 初始化参数梯度
-            if func_params:
-                adj_params = tuple(torch.zeros_like(p) for p in func_params)
-            else:
-                adj_params = ()
-
-            aug_y0 = (ans, adj_y, adj_params)
-
-            adj_y, adj_params = SOLVERS_Backward[method](
-                augmented_dynamics, aug_y0, beta,
-                tspan_flip, yhistory_flip)
-
-        # 在最后，确保清理所有局部变量
-        del augmented_dynamics
-        del yhistory_flip
-        del yhistory  # 也要删除局部变量
-        del ans
-        del func
-        del func_params
-        del ctx.ans
-        del ctx.yhistory
-        del ctx.func
-        del ctx.func_params
-        del ctx.beta
-        del ctx.method
-
-        # Return gradients for each input: func, n_state, n_params, *y0, beta, tspan, method, *params, options
-        return None, None, None, *adj_y, None, None, None, *adj_params, None
-        #(func, n_state, n_params, *y0, beta, tspan, method, *params, options)
+# Backward-compat alias.
+FDEAdjointMethod = FDEAdjointMethodUnscaled
 
 
 def forward_predictor(func, y0, beta, tspan, **options):
