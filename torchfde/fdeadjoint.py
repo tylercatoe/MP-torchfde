@@ -484,8 +484,10 @@ def forward_predictor(func, y0, beta, tspan, **options):
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
             device = y0[0].device
+            dtype_hi = y0[0].dtype
         else:
             device = y0.device
+            dtype_hi = y0.dtype
         yn = _clone(y0)
         # yn = y0
 
@@ -503,7 +505,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
 
             start_idx = max(0, k + 1 - memory_length)
 
-            j_vals = torch.arange(start_idx, k + 1, dtype=torch.float32, device=device).unsqueeze(1)
+            j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
 
             b_j_k_1 = h_beta_over_beta * (
                     torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta))
@@ -546,10 +548,12 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
             fy_history = []
 
         y0, adj_y0, adj_params0 = y_aug  ### we will use yhistory rather than compute y again
-        if _is_tuple(y0):
-            device = y0[0].device
+        if _is_tuple(adj_y0):
+            device = adj_y0[0].device
+            dtype_hi = adj_y0[0].dtype
         else:
-            device = y0.device
+            device = adj_y0.device
+            dtype_hi = adj_y0.dtype
 
         adj_y = _clone(adj_y0)
         adj_params = _clone(adj_params0)
@@ -569,7 +573,7 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
             start_idx = 0#max(0, k + 1 - memory_length)
 
             # CHANGED: j_vals now starts from start_idx instead of 0
-            j_vals = torch.arange(start_idx, k + 1, dtype=torch.float32, device=device).unsqueeze(1)
+            j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
 
             # CHANGED: Use torch.pow and pre-computed h_beta_over_beta
             b_j_k_1 = h_beta_over_beta * (
@@ -638,10 +642,12 @@ def forward_gl(func, y0, beta, tspan, **options):
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
             device = y0[0].device
+            dtype_hi = y0[0].dtype
         else:
             device = y0.device
+            dtype_hi = y0.dtype
 
-        c = torch.zeros(N + 1, dtype=torch.float64, device=device)
+        c = torch.zeros(N + 1, dtype=dtype_hi, device=device)
         c[0] = 1
         for j in range(1, N + 1):
             c[j] = (1 - (1 + beta) / j) * c[j - 1]
@@ -706,13 +712,15 @@ def backward_gl(func, y_aug, beta, tspan, yhistory, **options):
         _, adj_y0, adj_params0 = y_aug  ### we will use yhistory rather than compute y again
         if _is_tuple(adj_y0):
             device = adj_y0[0].device
+            dtype_hi = adj_y0[0].dtype
         else:
             device = adj_y0.device
+            dtype_hi = adj_y0.dtype
 
         adj_y = _clone(adj_y0)
         adj_params = _clone(adj_params0)
 
-        c = torch.zeros(N + 1, dtype=torch.float64, device=device)
+        c = torch.zeros(N + 1, dtype=dtype_hi, device=device)
         c[0] = 1
         for j in range(1, N + 1):
             c[j] = (1 - (1 + beta) / j) * c[j - 1]
@@ -788,8 +796,10 @@ def forward_trap(func, y0, beta, tspan, **options):
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
             device = y0[0].device
+            dtype_hi = y0[0].dtype
         else:
             device = y0.device
+            dtype_hi = y0.dtype
 
         # CHANGED: Removed unused c array computation
         # CHANGED: Use y_current for clarity
@@ -814,7 +824,7 @@ def forward_trap(func, y0, beta, tspan, **options):
             start_idx = max(0, k + 1 - memory_length)
 
             # CHANGED: Compute A_{j,k+1} weights correctly instead of RLcoeffs
-            j_vals = torch.arange(start_idx, k + 1, dtype=torch.float32, device=device)
+            j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device)
 
             # Compute A_{j,k+1} weights
             kjp2 = torch.pow(k + 2 - j_vals, one_minus_beta)
@@ -826,8 +836,8 @@ def forward_trap(func, y0, beta, tspan, **options):
 
             # CHANGED: Special handling for j=0 if it's in the range
             if start_idx == 0:
-                k_power = torch.pow(torch.tensor(k, dtype=torch.float32, device=device), one_minus_beta)
-                kp1_neg_alpha = torch.pow(torch.tensor(k + 1, dtype=torch.float32, device=device), -beta)
+                k_power = torch.pow(torch.tensor(k, dtype=dtype_hi, device=device), one_minus_beta)
+                kp1_neg_alpha = torch.pow(torch.tensor(k + 1, dtype=dtype_hi, device=device), -beta)
                 A_j_kp1[0] = k_power - (k + beta) * kp1_neg_alpha
 
             # CHANGED: Initialize convolution_sum properly
@@ -871,8 +881,10 @@ def backward_trap(func, y_aug, beta, tspan, yhistory_ori, **options):
         _, adj_y0, adj_params0 = y_aug  ### we will use yhistory_ori rather than compute y again
         if _is_tuple(adj_y0):
             device = adj_y0[0].device
+            dtype_hi = adj_y0[0].dtype
         else:
             device = adj_y0.device
+            dtype_hi = adj_y0.dtype
 
         adj_params = _clone(adj_params0)
 
@@ -902,7 +914,7 @@ def backward_trap(func, y_aug, beta, tspan, yhistory_ori, **options):
             start_idx = 0#max(0, k + 1 - memory_length)
 
             # CHANGED: Compute A_{j,k+1} weights correctly instead of RLcoeffs
-            j_vals = torch.arange(start_idx, k + 1, dtype=torch.float32, device=device)
+            j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device)
 
             # Compute A_{j,k+1} weights (same as forward_trap)
             kjp2 = torch.pow(k + 2 - j_vals, one_minus_beta)
@@ -914,8 +926,8 @@ def backward_trap(func, y_aug, beta, tspan, yhistory_ori, **options):
 
             # CHANGED: Special handling for j=0 if it's in the range
             if start_idx == 0:
-                k_power = torch.pow(torch.tensor(k, dtype=torch.float32, device=device), one_minus_beta)
-                kp1_neg_alpha = torch.pow(torch.tensor(k + 1, dtype=torch.float32, device=device), -beta)
+                k_power = torch.pow(torch.tensor(k, dtype=dtype_hi, device=device), one_minus_beta)
+                kp1_neg_alpha = torch.pow(torch.tensor(k + 1, dtype=dtype_hi, device=device), -beta)
                 A_j_kp1[0] = k_power - (k + beta) * kp1_neg_alpha
 
             # CHANGED: Initialize convolution_sum properly
@@ -976,8 +988,10 @@ def forward_l1(func, y0, beta, tspan, **options):
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
             device = y0[0].device
+            dtype_hi = y0[0].dtype
         else:
             device = y0.device
+            dtype_hi = y0.dtype
 
         y_current = _clone(y0)
         yhistory = [y_current]  # Store y0 as the first element
@@ -998,7 +1012,7 @@ def forward_l1(func, y0, beta, tspan, **options):
             start_idx = max(0, k + 1 - memory_length)
 
             # Vectorized computation of c_j^(k) weights for indices from start_idx to k
-            j_vals = torch.arange(start_idx, k + 1, dtype=torch.float32, device=device)
+            j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device)
 
             # Compute c_j^(k) for all j values
             kjp2 = torch.pow(k + 2 - j_vals, one_minus_beta)
@@ -1009,8 +1023,8 @@ def forward_l1(func, y0, beta, tspan, **options):
 
             # Special handling for j=0 if it's in the range
             if start_idx == 0:
-                c_j_k[0] = -(torch.pow(torch.tensor(k + 1, dtype=torch.float32, device=device), one_minus_beta) -
-                             torch.pow(torch.tensor(k, dtype=torch.float32, device=device), one_minus_beta))
+                c_j_k[0] = -(torch.pow(torch.tensor(k + 1, dtype=dtype_hi, device=device), one_minus_beta) -
+                             torch.pow(torch.tensor(k, dtype=dtype_hi, device=device), one_minus_beta))
 
             # Initialize accumulator for the sum
             convolution_sum = None
@@ -1062,8 +1076,10 @@ def backward_l1(func, y_aug, beta, tspan, yhistory_ori, **options):
 
         if _is_tuple(adj_y0):
             device = adj_y0[0].device
+            dtype_hi = adj_y0[0].dtype
         else:
             device = adj_y0.device
+            dtype_hi = adj_y0.dtype
 
         adj_params = _clone(adj_params0)
         adj_y_current = _clone(adj_y0)
@@ -1089,7 +1105,7 @@ def backward_l1(func, y_aug, beta, tspan, yhistory_ori, **options):
             start_idx = max(0, k + 1 - memory_length)
 
             # Vectorized computation of c_j^(k) weights (same as forward)
-            j_vals = torch.arange(start_idx, k + 1, dtype=torch.float32, device=device)
+            j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device)
 
             # Compute c_j^(k) for all j values
             kjp2 = torch.pow(k + 2 - j_vals, one_minus_beta)
@@ -1100,8 +1116,8 @@ def backward_l1(func, y_aug, beta, tspan, yhistory_ori, **options):
 
             # Special handling for j=0 if it's in the range
             if start_idx == 0:
-                c_j_k[0] = -(torch.pow(torch.tensor(k + 1, dtype=torch.float32, device=device), one_minus_beta) -
-                             torch.pow(torch.tensor(k, dtype=torch.float32, device=device), one_minus_beta))
+                c_j_k[0] = -(torch.pow(torch.tensor(k + 1, dtype=dtype_hi, device=device), one_minus_beta) -
+                             torch.pow(torch.tensor(k, dtype=dtype_hi, device=device), one_minus_beta))
 
             # Initialize accumulator for the sum
             convolution_sum = None
