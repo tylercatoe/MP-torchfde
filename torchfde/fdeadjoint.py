@@ -21,6 +21,66 @@ def _is_any_infinite(x: Union[torch.Tensor, tuple, list, None]) -> bool:
     return False
 
 
+def _state_storage_dtype(dtype_hi: torch.dtype) -> torch.dtype:
+    """Choose dtype used to store forward trajectory snapshots."""
+    return torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled() else dtype_hi
+
+
+def _cast_state_dtype(state, dtype: torch.dtype):
+    """Cast tensor or tuple-of-tensors to a target dtype (no-op if already matching)."""
+    if _is_tuple(state):
+        return tuple(s if s.dtype == dtype else s.to(dtype) for s in state)
+    return state if state.dtype == dtype else state.to(dtype)
+
+
+def _cast_state_like(state, like_state):
+    """Cast `state` to match dtypes of `like_state` (tensor or tuple-of-tensors)."""
+    if _is_tuple(like_state):
+        return tuple(
+            s if s.dtype == l.dtype else s.to(l.dtype)
+            for s, l in zip(state, like_state)
+        )
+    return state if state.dtype == like_state.dtype else state.to(like_state.dtype)
+
+
+class _StateHistoryBuffer:
+    """Preallocated trajectory storage with list-like indexing semantics."""
+
+    def __init__(self, template_state, length: int, storage_dtype: torch.dtype):
+        self.length = int(length)
+        self.storage_dtype = storage_dtype
+        self.is_tuple = _is_tuple(template_state)
+
+        if self.is_tuple:
+            self._buffers = tuple(
+                torch.empty((self.length, *s.shape), dtype=storage_dtype, device=s.device)
+                for s in template_state
+            )
+        else:
+            self._buffers = torch.empty(
+                (self.length, *template_state.shape),
+                dtype=storage_dtype,
+                device=template_state.device,
+            )
+
+    def set(self, idx: int, state) -> None:
+        if self.is_tuple:
+            for buf, s in zip(self._buffers, state):
+                src = s if s.dtype == self.storage_dtype else s.to(self.storage_dtype)
+                buf[idx].copy_(src)
+        else:
+            src = state if state.dtype == self.storage_dtype else state.to(self.storage_dtype)
+            self._buffers[idx].copy_(src)
+
+    def __getitem__(self, idx: int):
+        if self.is_tuple:
+            return tuple(buf[idx] for buf in self._buffers)
+        return self._buffers[idx]
+
+    def __len__(self):
+        return self.length
+
+
 class DynamicScaler:
     """Dynamic loss scaler for mixed-precision adjoint backpropagation."""
 
@@ -381,8 +441,10 @@ def _backward_impl(ctx, grad_output, mode: str):
             scaler.init_scaling(flat_grad)
 
         # Optional parameter dtype conversion to mirror rampde dynamic backend.
+        # Keep references to original parameter tensors so we can restore them
+        # without cloning, which reduces transient peak-memory spikes.
         dtype_low = torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled() else flat_grad.dtype
-        old_params = {name: p.data.clone() for name, p in ctx.func.named_parameters()}
+        old_params = {name: p.data for name, p in ctx.func.named_parameters()}
         for _, p in ctx.func.named_parameters():
             p.data = p.data.to(dtype_low)
 
@@ -406,7 +468,7 @@ def _backward_impl(ctx, grad_output, mode: str):
                 scaler.update_on_small_grad()
         finally:
             for name, p in ctx.func.named_parameters():
-                p.data = old_params[name].data
+                p.data = old_params[name]
 
     elif mode == "safe":
         try:
@@ -480,7 +542,6 @@ def forward_predictor(func, y0, beta, tspan, **options):
         h_beta_over_beta = torch.pow(h, beta) / beta
 
         fhistory = []
-        yhistory = []
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
             device = y0[0].device
@@ -488,14 +549,16 @@ def forward_predictor(func, y0, beta, tspan, **options):
         else:
             device = y0.device
             dtype_hi = y0.dtype
+        dtype_store = _state_storage_dtype(dtype_hi)
         yn = _clone(y0)
+        yhistory = _StateHistoryBuffer(yn, N, dtype_store)
         # yn = y0
 
         for k in range(N - 1):
             tn = tspan[k]
-            f_k = func(tn, yn)
-            fhistory.append(f_k)
-            yhistory.append(yn)
+            f_k = func(tn, _cast_state_dtype(yn, dtype_store))
+            fhistory.append(_cast_state_dtype(f_k, dtype_store))
+            yhistory.set(k, yn)
 
             if 'memory' not in options or options['memory'] == -1:
                 memory_length = k + 1  # Use all available history
@@ -507,30 +570,39 @@ def forward_predictor(func, y0, beta, tspan, **options):
 
             j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
 
-            b_j_k_1 = h_beta_over_beta * (
-                    torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta))
+            b_j_k_1 = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta))
 
             convolution_sum = None
 
-            for j in range(start_idx, k + 1):
-                local_idx = j - start_idx  # CHANGED: Use local index for b_j_k_1
-                if convolution_sum is None:
-                    convolution_sum = _multiply(b_j_k_1[local_idx], fhistory[j])
-                else:
-                    # convolution_sum = _add(convolution_sum, _multiply(b_j_k_1[local_idx], fhistory[j]))
-                    #_addmul_inplace(target, source, alpha):
-                    # In-place fused multiply-add operation: target += alpha * source
-                    convolution_sum = _addmul_inplace(convolution_sum, fhistory[j], b_j_k_1[local_idx])
+            hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fhistory[start_idx : k + 1]]
+            b_vals = b_j_k_1.reshape(-1) # Flatten b_j_k_1 to match the shape of hist for broadcasting
+            if _is_tuple(hist[0]):
+                # If the history elements are tuples, we need to handle each component separately
+                convolution_sum = tuple(
+                    torch.tensordot(b_vals, torch.stack([h[i] for h in hist], dim=0), dims=([0],[0])) for i in range(len(hist[0]))
+                )
+            else:
+                hist = torch.stack(hist, dim=0)
+                convolution_sum = torch.tensordot(b_vals, hist, dims=([0],[0]))  # Vectorized computation of convolution sum for non-tuple case
+
+            # for j in range(start_idx, k + 1):
+            #     local_idx = j - start_idx  # CHANGED: Use local index for b_j_k_1
+            #     if convolution_sum is None:
+            #         convolution_sum = _multiply(b_j_k_1[local_idx], fhistory[j])
+            #     else:
+            #         # convolution_sum = _add(convolution_sum, _multiply(b_j_k_1[local_idx], fhistory[j]))
+            #         #_addmul_inplace(target, source, alpha):
+            #         # In-place fused multiply-add operation: target += alpha * source
+            #         convolution_sum = _addmul_inplace(convolution_sum, fhistory[j], b_j_k_1[local_idx])
 
             # Final update step
             # weight_term = _multiply(gamma_beta, convolution_sum)
             weight_term = _mul_inplace(convolution_sum, gamma_beta)
             yn = _add(y0, weight_term)
 
-        yhistory.append(yn)
+        yhistory.set(N - 1, yn)
         # release memory
         del fhistory
-        del b_j_k_1
         return yn, yhistory
 
 def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
@@ -554,6 +626,7 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
         else:
             device = adj_y0.device
             dtype_hi = adj_y0.dtype
+        dtype_store = _state_storage_dtype(dtype_hi)
 
         adj_y = _clone(adj_y0)
         adj_params = _clone(adj_params0)
@@ -579,22 +652,32 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
             b_j_k_1 = h_beta_over_beta * (
                     torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta))
 
-            func_eval, vjp_y, vjp_params = func(tn, (y, adj_y, adj_params))
-            fadj_history.append(vjp_y)
+            func_eval, vjp_y, vjp_params = func(
+                tn,
+                (
+                    _cast_state_dtype(y, dtype_store),
+                    _cast_state_dtype(adj_y, dtype_store),
+                    _cast_state_dtype(adj_params, dtype_store),
+                ),
+            )
+            fadj_history.append(_cast_state_dtype(vjp_y, dtype_store))
             if yhistory is None:
-                fy_history.append(func_eval)
+                fy_history.append(_cast_state_dtype(func_eval, dtype_store))
 
-            # CHANGED: Initialize accumulator properly
-            convolution_sum = None
-
-            # CHANGED: Loop through the correct range with proper indexing
-            for j in range(start_idx, k + 1):
-                local_idx = j - start_idx  # CHANGED: Use local index for b_j_k_1
-                if convolution_sum is None:
-                    convolution_sum = _multiply(b_j_k_1[local_idx], fadj_history[j])
-                else:
-                    # CHANGED: Use in-place operation for efficiency
-                    convolution_sum = _addmul_inplace(convolution_sum, fadj_history[j], b_j_k_1[local_idx])
+            hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fadj_history[start_idx : k + 1]]
+            b_vals = b_j_k_1.reshape(-1)
+            if _is_tuple(hist[0]):
+                convolution_sum = tuple(
+                    torch.tensordot(
+                        b_vals,
+                        torch.stack([hist_item[i] for hist_item in hist], dim=0),
+                        dims=([0], [0]),
+                    )
+                    for i in range(len(hist[0]))
+                )
+            else:
+                hist = torch.stack(hist, dim=0)
+                convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
 
             # Final update step
             # CHANGED: Use in-place multiplication
@@ -603,19 +686,21 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
 
             # Handle y update
             if yhistory is not None and k < N - 1:
-                y = yhistory[k + 1]
+                y = _cast_state_like(yhistory[k + 1], y)
             elif yhistory is None:
-                # CHANGED: Reuse same pattern for y computation
-                y_convolution_sum = None
-
-                # CHANGED: Loop through the correct range with proper indexing
-                for j in range(start_idx, k + 1):
-                    local_idx = j - start_idx  # CHANGED: Use local index for b_j_k_1
-                    if y_convolution_sum is None:
-                        y_convolution_sum = _multiply(b_j_k_1[local_idx], fy_history[j])
-                    else:
-                        # CHANGED: Use in-place operation for efficiency
-                        y_convolution_sum = _addmul_inplace(y_convolution_sum, fy_history[j], b_j_k_1[local_idx])
+                hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fy_history[start_idx : k + 1]]
+                if _is_tuple(hist[0]):
+                    y_convolution_sum = tuple(
+                        torch.tensordot(
+                            b_vals,
+                            torch.stack([hist_item[i] for hist_item in hist], dim=0),
+                            dims=([0], [0]),
+                        )
+                        for i in range(len(hist[0]))
+                    )
+                else:
+                    hist = torch.stack(hist, dim=0)
+                    y_convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
 
                 # CHANGED: Use in-place multiplication
                 y_weight_term = _mul_inplace(y_convolution_sum, gamma_beta)
@@ -630,7 +715,6 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
         del fadj_history
         if yhistory is None:  # CHANGED: Only delete fy_history if it was created
             del fy_history
-        del b_j_k_1
         return adj_y, adj_params
 
 
@@ -646,6 +730,7 @@ def forward_gl(func, y0, beta, tspan, **options):
         else:
             device = y0.device
             dtype_hi = y0.dtype
+        dtype_store = _state_storage_dtype(dtype_hi)
 
         c = torch.zeros(N + 1, dtype=dtype_hi, device=device)
         c[0] = 1
@@ -657,7 +742,8 @@ def forward_gl(func, y0, beta, tspan, **options):
 
         # CHANGED: Use y_current for clarity and consistency
         y_current = _clone(y0)
-        y_history = [y_current]
+        y_history = _StateHistoryBuffer(y_current, N, dtype_store)
+        y_history.set(0, y_current)
 
         # CHANGED: Loop range from range(1, N) to range(N - 1) to match correct algorithm
         for k in range(N - 1):
@@ -700,7 +786,7 @@ def forward_gl(func, y0, beta, tspan, **options):
             y_current = _minusmul_inplace(convolution_sum, f_k, h_power)
 
             # Store y_{k+1} in history
-            y_history.append(y_current)
+            y_history.set(k + 1, y_current)
 
         return y_current, y_history  # CHANGED: Fixed - return y_current instead of yn
 
@@ -737,7 +823,7 @@ def backward_gl(func, y_aug, beta, tspan, yhistory, **options):
             t_k = tspan[k]
 
             # CHANGED: Get the corresponding y from history at current time
-            y_current = yhistory[k]
+            y_current = _cast_state_like(yhistory[k], adj_y_current)
 
             # CHANGED: Evaluate function at current time with current states
             func_eval, vjp_y, vjp_params = func(t_k, (y_current, adj_y_current, adj_params))
@@ -800,11 +886,13 @@ def forward_trap(func, y0, beta, tspan, **options):
         else:
             device = y0.device
             dtype_hi = y0.dtype
+        dtype_store = _state_storage_dtype(dtype_hi)
 
         # CHANGED: Removed unused c array computation
         # CHANGED: Use y_current for clarity
         y_current = _clone(y0)
-        y_history = [y0]  # CHANGED: Store y0 not yn as first element
+        y_history = _StateHistoryBuffer(y_current, N, dtype_store)
+        y_history.set(0, y_current)
 
         # CHANGED: Fixed loop range from range(1, N) to range(N - 1)
         for k in range(N - 1):
@@ -863,7 +951,7 @@ def forward_trap(func, y0, beta, tspan, **options):
 
 
             # Store y_{k+1} in history
-            y_history.append(y_current)
+            y_history.set(k + 1, y_current)
 
         return y_current, y_history  # CHANGED: Return y_current instead of yn
 
@@ -899,7 +987,7 @@ def backward_trap(func, y_aug, beta, tspan, yhistory_ori, **options):
             t_k = tspan[k]
 
             # CHANGED: Get the corresponding y from history at current time
-            y_current = yhistory_ori[k]
+            y_current = _cast_state_like(yhistory_ori[k], adj_y_current)
 
             # CHANGED: Evaluate function at current time with current states
             func_eval, vjp_y, vjp_params = func(t_k, (y_current, adj_y_current, adj_params))
@@ -992,9 +1080,11 @@ def forward_l1(func, y0, beta, tspan, **options):
         else:
             device = y0.device
             dtype_hi = y0.dtype
+        dtype_store = _state_storage_dtype(dtype_hi)
 
         y_current = _clone(y0)
-        yhistory = [y_current]  # Store y0 as the first element
+        yhistory = _StateHistoryBuffer(y_current, N, dtype_store)
+        yhistory.set(0, y_current)
 
         for k in range(N - 1):
             # Current time point t_k
@@ -1047,7 +1137,7 @@ def forward_l1(func, y0, beta, tspan, **options):
 
 
             # Store y_{k+1} in history
-            yhistory.append(y_current)
+            yhistory.set(k + 1, y_current)
 
         return y_current, yhistory
 
@@ -1090,7 +1180,7 @@ def backward_l1(func, y_aug, beta, tspan, yhistory_ori, **options):
             t_k = tspan[k]
 
             # Get the corresponding y from history at current time
-            y_current = yhistory_ori[k]
+            y_current = _cast_state_like(yhistory_ori[k], adj_y_current)
 
             # Evaluate function at current time with current states
             func_eval, vjp_y, vjp_params = func(t_k, (y_current, adj_y_current, adj_params))
@@ -1151,7 +1241,7 @@ def backward_l1(func, y_aug, beta, tspan, yhistory_ori, **options):
         return adj_y_current, adj_params
 
 
-def backward_euler_w_history(func, y_aug, beta, tspan, yhistory):
+def backward_euler_w_history(func, y_aug, beta, tspan, yhistory, **options):
     with torch.no_grad():
         N = len(tspan)
         # print('N = len(tspan)', N, tspan)
@@ -1180,7 +1270,7 @@ def backward_euler_w_history(func, y_aug, beta, tspan, yhistory):
 
 
             func_eval, vjp_y, vjp_params = func(tn, (y, adj_y, adj_params))
-            y = yhistory[k + 1]
+            y = _cast_state_like(yhistory[k + 1], adj_y)
 
             ## We assume having the full yhistory
             ## We do not consider the following case any more.
