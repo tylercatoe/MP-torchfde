@@ -509,7 +509,7 @@ class FDEAdjointMethodDynamic(torch.autograd.Function):
 class FDEAdjointMethodUnscaledSafe(torch.autograd.Function):
     @staticmethod
     def forward(ctx, func, n_state, n_params, loss_scaler, *args):
-        return _forward_impl(ctx, func, n_state, n_params, loss_scaler, *args)
+        return _forward_impl(ctx, func, n_state, n_params, loss_scaler,  *args)
 
     @staticmethod
     def backward(ctx, *grad_output):
@@ -578,9 +578,10 @@ def forward_predictor(func, y0, beta, tspan, **options):
 
             convolution_sum = None
 
-            hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fhistory[start_idx : k + 1]]
-            b_vals = b_j_k_1.reshape(-1) # Flatten b_j_k_1 to match the shape of hist for broadcasting
             with torch.autocast(device_type='cuda', enabled=False):
+                hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fhistory[start_idx : k + 1]]
+                b_vals = b_j_k_1.reshape(-1) # Flatten b_j_k_1 to match the shape of hist for broadcasting
+                
                 if _is_tuple(hist[0]):
                     # If the history elements are tuples, we need to handle each component separately
                     convolution_sum = tuple(
