@@ -6,6 +6,7 @@ from .utils_fde import _flatten, _flatten_convert_none_to_zeros,_check_inputs, _
 from .utils_fde import _addmul_inplace, _mul_inplace, _minusmul_inplace
 from .utils_fde import _is_tuple, _clone, _add, _multiply, _minus, ReversedListView
 from . import config
+#from torch.amp import autocast
 
 ScalerType = Union["DynamicScaler", None, Literal[False]]
 
@@ -556,7 +557,10 @@ def forward_predictor(func, y0, beta, tspan, **options):
 
         for k in range(N - 1):
             tn = tspan[k]
-            f_k = func(tn, _cast_state_dtype(yn, dtype_store))
+
+            with torch.autocast(device_type='cuda', dtype=dtype_store):
+                f_k = func(tn, yn)
+
             fhistory.append(_cast_state_dtype(f_k, dtype_store))
             yhistory.set(k, yn)
 
@@ -576,29 +580,30 @@ def forward_predictor(func, y0, beta, tspan, **options):
 
             hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fhistory[start_idx : k + 1]]
             b_vals = b_j_k_1.reshape(-1) # Flatten b_j_k_1 to match the shape of hist for broadcasting
-            if _is_tuple(hist[0]):
-                # If the history elements are tuples, we need to handle each component separately
-                convolution_sum = tuple(
-                    torch.tensordot(b_vals, torch.stack([h[i] for h in hist], dim=0), dims=([0],[0])) for i in range(len(hist[0]))
-                )
-            else:
-                hist = torch.stack(hist, dim=0)
-                convolution_sum = torch.tensordot(b_vals, hist, dims=([0],[0]))  # Vectorized computation of convolution sum for non-tuple case
+            with torch.autocast(device_type='cuda', enabled=False):
+                if _is_tuple(hist[0]):
+                    # If the history elements are tuples, we need to handle each component separately
+                    convolution_sum = tuple(
+                        torch.tensordot(b_vals, torch.stack([h[i] for h in hist], dim=0), dims=([0],[0])) for i in range(len(hist[0]))
+                    )
+                else:
+                    hist = torch.stack(hist, dim=0)
+                    convolution_sum = torch.tensordot(b_vals, hist, dims=([0],[0]))  # Vectorized computation of convolution sum for non-tuple case
 
-            # for j in range(start_idx, k + 1):
-            #     local_idx = j - start_idx  # CHANGED: Use local index for b_j_k_1
-            #     if convolution_sum is None:
-            #         convolution_sum = _multiply(b_j_k_1[local_idx], fhistory[j])
-            #     else:
-            #         # convolution_sum = _add(convolution_sum, _multiply(b_j_k_1[local_idx], fhistory[j]))
-            #         #_addmul_inplace(target, source, alpha):
-            #         # In-place fused multiply-add operation: target += alpha * source
-            #         convolution_sum = _addmul_inplace(convolution_sum, fhistory[j], b_j_k_1[local_idx])
+                # for j in range(start_idx, k + 1):
+                #     local_idx = j - start_idx  # CHANGED: Use local index for b_j_k_1
+                #     if convolution_sum is None:
+                #         convolution_sum = _multiply(b_j_k_1[local_idx], fhistory[j])
+                #     else:
+                #         # convolution_sum = _add(convolution_sum, _multiply(b_j_k_1[local_idx], fhistory[j]))
+                #         #_addmul_inplace(target, source, alpha):
+                #         # In-place fused multiply-add operation: target += alpha * source
+                #         convolution_sum = _addmul_inplace(convolution_sum, fhistory[j], b_j_k_1[local_idx])
 
-            # Final update step
-            # weight_term = _multiply(gamma_beta, convolution_sum)
-            weight_term = _mul_inplace(convolution_sum, gamma_beta)
-            yn = _add(y0, weight_term)
+                # Final update step
+                # weight_term = _multiply(gamma_beta, convolution_sum)
+                weight_term = _mul_inplace(convolution_sum, gamma_beta)
+                yn = _add(y0, weight_term)
 
         yhistory.set(N - 1, yn)
         # release memory
@@ -652,45 +657,19 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
             b_j_k_1 = h_beta_over_beta * (
                     torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta))
 
-            func_eval, vjp_y, vjp_params = func(
-                tn,
-                (
-                    _cast_state_dtype(y, dtype_store),
-                    _cast_state_dtype(adj_y, dtype_store),
-                    _cast_state_dtype(adj_params, dtype_store),
-                ),
-            )
+            with torch.autocast(device_type='cuda', dtype=dtype_store):
+                func_eval, vjp_y, vjp_params = func(tn, (y, adj_y, adj_params))
+
             fadj_history.append(_cast_state_dtype(vjp_y, dtype_store))
             if yhistory is None:
                 fy_history.append(_cast_state_dtype(func_eval, dtype_store))
 
             hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fadj_history[start_idx : k + 1]]
             b_vals = b_j_k_1.reshape(-1)
-            if _is_tuple(hist[0]):
-                convolution_sum = tuple(
-                    torch.tensordot(
-                        b_vals,
-                        torch.stack([hist_item[i] for hist_item in hist], dim=0),
-                        dims=([0], [0]),
-                    )
-                    for i in range(len(hist[0]))
-                )
-            else:
-                hist = torch.stack(hist, dim=0)
-                convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
 
-            # Final update step
-            # CHANGED: Use in-place multiplication
-            weight_term = _mul_inplace(convolution_sum, gamma_beta)
-            adj_y = _add(adj_y0, weight_term)
-
-            # Handle y update
-            if yhistory is not None and k < N - 1:
-                y = _cast_state_like(yhistory[k + 1], y)
-            elif yhistory is None:
-                hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fy_history[start_idx : k + 1]]
+            with torch.autocast(device_type='cuda', enabled=False):
                 if _is_tuple(hist[0]):
-                    y_convolution_sum = tuple(
+                    convolution_sum = tuple(
                         torch.tensordot(
                             b_vals,
                             torch.stack([hist_item[i] for hist_item in hist], dim=0),
@@ -700,16 +679,39 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
                     )
                 else:
                     hist = torch.stack(hist, dim=0)
-                    y_convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
+                    convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
 
+                # Final update step
                 # CHANGED: Use in-place multiplication
-                y_weight_term = _mul_inplace(y_convolution_sum, gamma_beta)
-                y = _add(y0, y_weight_term)
+                weight_term = _mul_inplace(convolution_sum, gamma_beta)
+                adj_y = _add(adj_y0, weight_term)
 
-            # Update parameter gradients - already using in-place operation, good!
-            if adj_params and vjp_params:
-                for ap, vp in zip(adj_params, vjp_params):
-                    ap.add_(vp, alpha=h)
+                # Handle y update
+                if yhistory is not None and k < N - 1:
+                    y = _cast_state_like(yhistory[k + 1], y)
+                elif yhistory is None:
+                    hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fy_history[start_idx : k + 1]]
+                    if _is_tuple(hist[0]):
+                        y_convolution_sum = tuple(
+                            torch.tensordot(
+                                b_vals,
+                                torch.stack([hist_item[i] for hist_item in hist], dim=0),
+                                dims=([0], [0]),
+                            )
+                            for i in range(len(hist[0]))
+                        )
+                    else:
+                        hist = torch.stack(hist, dim=0)
+                        y_convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
+
+                    # CHANGED: Use in-place multiplication
+                    y_weight_term = _mul_inplace(y_convolution_sum, gamma_beta)
+                    y = _add(y0, y_weight_term)
+
+                # Update parameter gradients - already using in-place operation, good!
+                if adj_params and vjp_params:
+                    for ap, vp in zip(adj_params, vjp_params):
+                        ap.add_(vp, alpha=h)
 
         # release memory
         del fadj_history
