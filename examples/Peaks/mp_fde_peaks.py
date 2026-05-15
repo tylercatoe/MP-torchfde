@@ -28,6 +28,7 @@ class FDEConfig:
     method: str = 'predictor-f'
     memory: int = -1
     return_history: bool = False
+    dtype_hi: Optional[torch.dtype] = None
 
     # Multi-term FDE Settings
     multi_beta: Optional[List[float]] = None
@@ -59,6 +60,7 @@ class ModeConfig:
     method: str
     autocast_dtype: Optional[torch.dtype] = None
     loss_scaler: Any = False
+    dtype_hi: Optional[torch.dtype] = None
 
 def parse_args() -> argparse.Namespace: 
     parser = argparse.ArgumentParser(description="Peaks example for FDEs with the multi-precision adjoint method.")
@@ -90,6 +92,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--learn_coefficient', action='store_true', help='Whether to learn the coefficients for the fractional derivatives in multi-term FDEs')
 
     # Mode Settings
+    #parser.add_argument("--dtype_hi", type=str, default='float32', choices=[None, 'float16', 'bfloat16', 'float32'], help="High precision dtype to use for multi-precision training (e.g., float16, bfloat16)")
     parser.add_argument("--mode", type=str, default="adjoint", choices=["direct", "adjoint", "adjoint-mixed", "adjoint-mixed-bfloat"], help="Training mode to run")
     parser.add_argument('--adjoint_method', type=str, default='predictor-f', choices=sorted(ADJOINT_METHODS), help='Adjoint method to use for training')
     parser.add_argument('--direct_method', type=str, default='predictor', choices=sorted(DIRECT_METHODS), help='Direct method to use for FDE integration')
@@ -137,6 +140,7 @@ class FDEBlock(nn.Module):
         options = {
             'memory': cfg.memory,
             'return_history': cfg.return_history,
+            'dtype_hi': cfg.dtype_hi,
         }
         beta = torch.tensor(cfg.beta, device=x.device, dtype=x.dtype)
         
@@ -225,6 +229,8 @@ def dtype_from_name(name: str) -> torch.dtype:
         return torch.float16
     elif name == 'bfloat16':
         return torch.bfloat16
+    elif name == 'float32':
+        return torch.float32
     else:
         raise ValueError(f"Unsupported dtype name: {name}")
 
@@ -238,7 +244,7 @@ def setup_logging(logpath: str, logger_name: str) -> logging.Logger:
     logger.handlers.clear()
     logger.propagate = False
 
-    handler = logging.FileHandler(logpath, mode = 'a')
+    handler = logging.FileHandler(logpath, mode='w')
     handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
     logger.addHandler(handler)
     logger.info(f"Logging to {logpath}")
@@ -252,6 +258,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
     direct_method = args.direct_method
     
     mp_dtype = dtype_from_name(args.mp_dtype)
+    #dtype_hi = dtype_from_name(args.dtype_hi) if args.dtype_hi is not None else None
     if args.mp_loss_scaler == 'auto':
         mp_scaler_mode = 'dynamic' if mp_dtype == torch.float16 else "false"
     else:
@@ -265,6 +272,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=direct_method,
             autocast_dtype=None,
             loss_scaler=False,
+            #dtype_hi=dtype_hi,
         )
     elif mode == 'adjoint':
         return ModeConfig(
@@ -273,6 +281,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=args.adjoint_method,
             autocast_dtype=None,
             loss_scaler=False,
+            #dtype_hi=dtype_hi,
         )
     elif mode == 'adjoint-mixed':
         autocast_dtype = mp_dtype if device.type == 'cuda' else None
@@ -288,6 +297,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=args.adjoint_method,
             autocast_dtype=autocast_dtype,
             loss_scaler=scaler,
+            #dtype_hi=dtype_hi,
         )
     elif mode == 'adjoint-mixed-bfloat':
         autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
@@ -297,6 +307,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=args.adjoint_method,
             autocast_dtype=autocast_dtype,
             loss_scaler=False,
+            #dtype_hi=dtype_hi,
         )
     else:
         raise ValueError(f"Unsupported mode: {mode}")
@@ -378,12 +389,21 @@ def train(
         logger.info(f'Using loss scaler: {mode_config.loss_scaler}')
     else:
         logger.info('No loss scaler will be used')
-    
+
+    # Generate data
+    data, targets = generate_peaks_data(args.num_samples)
+    train_size = int(args.num_samples * (1 - args.test_split))
+    train_data, train_targets = data[:train_size], targets[:train_size]
+    test_data, test_targets = data[train_size:], targets[train_size:]
+    train_data, train_targets = train_data.to(device), train_targets.to(device)
+    test_data, test_targets = test_data.to(device), test_targets.to(device)
+
     fde_config = FDEConfig(
         beta = args.beta,
         T = args.T,
         step_size = args.step_size,
         method = mode_config.method,
+        dtype_hi = train_data.dtype,
     )
 
     logger.info(
@@ -393,7 +413,7 @@ def train(
         f'  step_size={fde_config.step_size}, '
         f'  method={fde_config.method}'
     )
-
+    
     fdeint_solver = build_solver(mode_config)
     model = MPFDE_Peaks(width=args.width, num_layers=args.num_layers, fde_config=fde_config, fdeint_solver=fdeint_solver).to(device)
 
@@ -407,14 +427,6 @@ def train(
         eta_min=1e-4,
     )
     criterion = nn.MSELoss()
-
-    # Generate data
-    data, targets = generate_peaks_data(args.num_samples)
-    train_size = int(args.num_samples * (1 - args.test_split))
-    train_data, train_targets = data[:train_size], targets[:train_size]
-    test_data, test_targets = data[train_size:], targets[train_size:]
-    train_data, train_targets = train_data.to(device), train_targets.to(device)
-    test_data, test_targets = test_data.to(device), test_targets.to(device)
 
     best_test_mse = float('inf')
     last_test_mse = float('inf')
@@ -440,10 +452,13 @@ def train(
             end = min(start + args.batch_size, train_size)
             xy_batch = xy_epoch[start:end].to(device, non_blocking=True)
             z_batch = z_epoch[start:end].to(device, non_blocking=True)
+            print(f"Before autocast: xy_batch dtype={xy_batch.dtype}, z_batch dtype={z_batch.dtype}")
 
             optimizer.zero_grad(set_to_none=True)
+            
             if mode_config.autocast_dtype is not None:
                 with torch.autocast(device_type=device.type, dtype=mode_config.autocast_dtype):
+                    print(f"Inside autocast: xy_batch dtype={xy_batch.dtype}, z_batch dtype={z_batch.dtype}")
                     pred = model(xy_batch)
                     loss = criterion(pred.squeeze(), z_batch)
             else:

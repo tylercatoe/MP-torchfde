@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-module load cuda/12.3.0
+module load cuda/12.3.0WIDT
 module load anaconda3/2023.09-0
 # shellcheck disable=SC1091
 eval "$(conda shell.bash hook)"
