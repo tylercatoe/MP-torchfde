@@ -56,12 +56,8 @@ merge_summary="${MERGE_SUMMARY:-1}"
 if [ "$merge_summary" = "1" ]; then
   submit_dir="$(pwd)"
   dep="afterany:${job_direct}:${job_adj}:${job_adjmix}:${job_adjmix_bf16}"
-  echo "Submitting summary-merge job (dependency: $dep)..."
-  job_merge=$(sbatch --parsable --job-name=mp-stl10-summary-merge \
-    --dependency="$dep" \
-    --output=slurm_logs/mp_fde_stl10_summary_%j.out \
-    --error=slurm_logs/mp_fde_stl10_summary_%j.err \
-    --export=ALL,SAVE_ROOT="$save_root",SUBMIT_DIR="$submit_dir" <<'SLURM'
+  merge_job_script="$submit_dir/slurm_logs/mp_fde_stl10_summary_merge_job.sh"
+  cat > "$merge_job_script" <<'SLURM'
 #!/bin/bash
 set -euo pipefail
 cd "$SUBMIT_DIR"
@@ -101,6 +97,7 @@ headers = [
 
 def parse_latest_row(path: str):
     if not os.path.isfile(path):
+        print(f"[merge] missing summary input: {path}")
         return None
     latest = None
     with open(path, "r", encoding="utf-8") as f:
@@ -138,6 +135,9 @@ line = "-+-".join("-" * w for w in widths)
 table = "\n".join([fmt(headers), line] + [fmt(r) for r in rows])
 
 out_path = os.path.join(save_root, "summary_all.log")
+print(f"[merge] cwd={os.getcwd()}")
+print(f"[merge] SAVE_ROOT={save_root}")
+print(f"[merge] writing to={out_path}")
 with open(out_path, "a", encoding="utf-8") as f:
     f.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}]\n")
     f.write(table)
@@ -147,7 +147,14 @@ print("Combined summary table written to:", out_path)
 print(table)
 PY
 SLURM
-)
+  chmod +x "$merge_job_script"
+  echo "Submitting summary-merge job (dependency: $dep)..."
+  job_merge=$(sbatch --parsable --job-name=mp-stl10-summary-merge \
+    --dependency="$dep" \
+    --output=slurm_logs/mp_fde_stl10_summary_%j.out \
+    --error=slurm_logs/mp_fde_stl10_summary_%j.err \
+    --export=ALL,SAVE_ROOT="$save_root",SUBMIT_DIR="$submit_dir" \
+    "$merge_job_script")
   echo "  merge_job_id=$job_merge"
 else
   echo "Skipping summary merge job because MERGE_SUMMARY=$merge_summary"
