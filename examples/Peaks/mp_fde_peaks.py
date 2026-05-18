@@ -143,7 +143,7 @@ class FDEBlock(nn.Module):
             'memory': cfg.memory,
             'return_history': cfg.return_history,
             'dtype_hi': cfg.dtype_hi,
-            'dtype_store': cfg.mp_dtype
+            'mp_dtype': cfg.mp_dtype,
         }
         beta = torch.tensor(cfg.beta, device=x.device, dtype=x.dtype)
         
@@ -279,6 +279,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=direct_method,
             autocast_dtype=None,
             loss_scaler=False,
+            mp_dtype=mp_dtype,
             #dtype_hi=dtype_hi,
         )
     elif mode == 'adjoint':
@@ -288,6 +289,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=args.adjoint_method,
             autocast_dtype=None,
             loss_scaler=False,
+            mp_dtype=mp_dtype,
             #dtype_hi=dtype_hi,
         )
     elif mode == 'adjoint-mixed':
@@ -304,6 +306,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=args.adjoint_method,
             autocast_dtype=autocast_dtype,
             loss_scaler=scaler,
+            mp_dtype=mp_dtype,
             #dtype_hi=dtype_hi,
         )
     elif mode == 'adjoint-mixed-bfloat':
@@ -314,6 +317,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=args.adjoint_method,
             autocast_dtype=autocast_dtype,
             loss_scaler=False,
+            mp_dtype=mp_dtype,
             #dtype_hi=dtype_hi,
         )
     else:
@@ -413,6 +417,7 @@ def train(
         step_size = args.step_size,
         method = mode_config.method,
         dtype_hi = train_data.dtype,
+        mp_dtype = mode_config.mp_dtype,
     )
 
     logger.info(
