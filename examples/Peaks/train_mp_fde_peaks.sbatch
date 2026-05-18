@@ -16,7 +16,7 @@ module load cuda/12.3.0WIDT
 module load anaconda3/2023.09-0
 # shellcheck disable=SC1091
 eval "$(conda shell.bash hook)"
-
+c
 project_root="${SLURM_SUBMIT_DIR:-$PWD}"
 mkdir -p "$project_root/slurm_logs"
 cd "$project_root"

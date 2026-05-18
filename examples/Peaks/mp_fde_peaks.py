@@ -537,9 +537,11 @@ def train(
     
         
 if __name__ == "__main__":
+
     args = parse_args()
     seed_everything(args.seed)
 
     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
+
     mode_config = build_mode_configs(args, device)
     train(args, mode_config, device)
