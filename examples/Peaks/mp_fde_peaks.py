@@ -516,6 +516,15 @@ def train(
             f'Test MSE {test_mse:.6f} | '
             f'Best Test MSE {best_test_mse:.6f}'
         )
+        print(
+            f'Epoch {iteration:03d} | '
+            f'Time {epoch_time:.2f}s | '
+            f'Peak Mem {train_step_peak_mem_mb:.2f} MB | '
+            f'LR {lr:.4e} | '
+            f'Train MSE {train_mse:.6f} | '
+            f'Test MSE {test_mse:.6f} | '
+            f'Best Test MSE {best_test_mse:.6f}'
+        )
 
         if device.type == 'cuda':
             torch.cuda.synchronize(device)
