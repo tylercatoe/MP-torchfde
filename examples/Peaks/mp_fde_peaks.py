@@ -173,15 +173,15 @@ class MPFDE_Peaks(nn.Module):
         self.fc_out = nn.Linear(width, self.dim_out)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        print(f'\nData passed to foward is {x.dtype}')
+        #print(f'\nData passed to foward is {x.dtype}')
         out = self.fc_in(x)
         out = torch.tanh(out)
-        print(f'After inital layer, data is {out.dtype}')
+        #print(f'After inital layer, data is {out.dtype}')
         out = self.fde_block(out)
-        print(f'After FDE block, out is {out.dtype}')
+        #print(f'After FDE block, out is {out.dtype}')
         out = torch.tanh(out)
         out = self.fc_out(out)
-        print(f'Returining out with {out.dtype}')
+        #print(f'Returining out with {out.dtype}')
         return out
 
 # =============================================================================
@@ -455,10 +455,7 @@ def train(
     epoch_start_time = time.perf_counter()
     train_start = time.perf_counter()
 
-    for iteration in range(args.nepochs):
-        print('-'*30)
-        print(f'Iteration ', iteration)
-        print('-'*30)
+    for iteration in range(args.nepochs): 
         if device.type == 'cuda':
             torch.cuda.reset_peak_memory_stats(device)
 
@@ -474,12 +471,12 @@ def train(
             optimizer.zero_grad(set_to_none=True)
             
             if mode_config.autocast_dtype is not None:
-                print('Using Autocast')
+                #print('Using Autocast')
                 with torch.autocast(device_type=device.type, dtype=mode_config.autocast_dtype):
                     pred = model(xy_batch)
                     loss = criterion(pred.squeeze(), z_batch)
             else:
-                print('Not using autocast')                
+                #print('Not using autocast')                
                 pred = model(xy_batch)
                 loss = criterion(pred.squeeze(), z_batch)
 
