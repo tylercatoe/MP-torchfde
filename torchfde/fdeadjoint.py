@@ -586,7 +586,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
             with torch.autocast(device_type='cuda', enabled=False):
                 hist = fhistory[start_idx : k + 1]
                 #hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fhistory[start_idx : k + 1]]
-                b_vals = b_j_k_1.reshape(-1).to(dtype_low) # Flatten b_j_k_1 and use high-precision accumulation
+                b_vals = b_j_k_1.reshape(-1).to(dtype_hi) # Flatten b_j_k_1 and use high-precision accumulation
 
                 if _is_tuple(hist[0]):
                     # If the history elements are tuples, we need to handle each component separately
