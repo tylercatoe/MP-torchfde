@@ -553,19 +553,16 @@ def forward_predictor(func, y0, beta, tspan, **options):
             device = y0[0].device            
         else:
             device = y0.device
-        #dtype_store = _state_storage_dtype(dtype_hi)
-        #dtype_accum = options.get("dtype_hi", torch.float32)
-        dtype_store = options.get('mp_dtype')
-        dtype_accum = dtype_hi
+        dtype_low = options.get('mp_dtype')
         yn = _clone(y0)
-        yhistory = _StateHistoryBuffer(yn, N, dtype_store)
+        yhistory = _StateHistoryBuffer(yn, N, dtype_low)
         # yn = y0
-        print(f"Forward predictor: using dtype high of {dtype_hi}, {dtype_accum} for accumulations and {dtype_store} for storage.")
+        print(f"Forward predictor: using dtype high of {dtype_hi} for accumulations and {dtype_low} for storage.")
 
         for k in range(N - 1):
             tn = tspan[k]
 
-            with torch.autocast(device_type='cuda', dtype=dtype_store):
+            with torch.autocast(device_type='cuda', dtype=dtype_low):
                 f_k = func(tn, yn)
 
             #fhistory.append(_cast_state_dtype(f_k, dtype_store))
@@ -589,20 +586,20 @@ def forward_predictor(func, y0, beta, tspan, **options):
             with torch.autocast(device_type='cuda', enabled=False):
                 hist = fhistory[start_idx : k + 1]
                 #hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fhistory[start_idx : k + 1]]
-                b_vals = b_j_k_1.reshape(-1).to(dtype_accum) # Flatten b_j_k_1 and use high-precision accumulation
+                b_vals = b_j_k_1.reshape(-1).to(dtype_low) # Flatten b_j_k_1 and use high-precision accumulation
 
                 if _is_tuple(hist[0]):
                     # If the history elements are tuples, we need to handle each component separately
                     convolution_sum = tuple(
                         torch.tensordot(
                             b_vals,
-                            torch.stack([h[i].to(dtype_accum) for h in hist], dim=0),
+                            torch.stack([h[i].to(dtype_hi) for h in hist], dim=0),
                             dims=([0],[0]),
                         )
                         for i in range(len(hist[0]))
                     )
                 else:
-                    hist = torch.stack(hist, dim=0).to(dtype_accum)
+                    hist = torch.stack(hist, dim=0).to(dtype_hi)
                     convolution_sum = torch.tensordot(b_vals, hist, dims=([0],[0]))  # Vectorized computation of convolution sum for non-tuple case
 
                 # for j in range(start_idx, k + 1):
@@ -620,7 +617,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
                 weight_term = _mul_inplace(convolution_sum, gamma_beta)
                 yn = _add(y0, weight_term)
 
-        yn = _cast_state_dtype(yn, dtype_store)
+        yn = _cast_state_dtype(yn, dtype_low)
         yhistory.set(N - 1, yn)
         # release memory
         del fhistory
@@ -642,18 +639,13 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
 
         y0, adj_y0, adj_params0 = y_aug  ### we will use yhistory rather than compute y again
         dtype_hi = options.get("dtype_hi")
+        dtype_low = options.get('mp_dtype')
 
         if _is_tuple(adj_y0):
             device = adj_y0[0].device
         else:
             device = adj_y0.device
-        dtype_store = options.get('mp_dtype')
-        #dtype_store = _state_storage_dtype(dtype_hi)
-        #dtype_store = yhistory[0][0].dtype
-        #dtype_accum = options.get("dtype_hi", torch.float32)
-        dtype_accum = dtype_hi
-        #print(f"Backward predictor: using dtype high of {dtype_hi}, {dtype_accum} for accumulations and {dtype_store} for storage.")
-
+        
         adj_y = _clone(adj_y0)
         adj_params = _clone(adj_params0)
         y = _clone(y0)
@@ -677,10 +669,10 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
             # CHANGED: Use torch.pow and pre-computed h_beta_over_beta
             b_j_k_1 = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta))
 
-            with torch.autocast(device_type='cuda', dtype=dtype_store):
+            with torch.autocast(device_type='cuda', dtype=dtype_low):
                 func_eval, vjp_y, vjp_params = func(tn, (y, adj_y, adj_params))
 
-            #fadj_history.append(_cast_state_dtype(vjp_y, dtype_store))
+            #fadj_history.append(_cast_state_dtype(vjp_y, dtype_low))
             fadj_history.append(vjp_y)
 
             if yhistory is None:
@@ -689,20 +681,20 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
 
             #hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fadj_history[start_idx : k + 1]]
             hist = fadj_history[start_idx : k + 1]
-            b_vals = b_j_k_1.reshape(-1).to(dtype_accum)
+            b_vals = b_j_k_1.reshape(-1).to(dtype_hi)
 
             with torch.autocast(device_type='cuda', enabled=False):
                 if _is_tuple(hist[0]):
                     convolution_sum = tuple(
                         torch.tensordot(
                             b_vals,
-                            torch.stack([hist_item[i].to(dtype_accum) for hist_item in hist], dim=0),
+                            torch.stack([hist_item[i].to(dtype_hi) for hist_item in hist], dim=0),
                             dims=([0], [0]),
                         )
                         for i in range(len(hist[0]))
                     )
                 else:
-                    hist = torch.stack(hist, dim=0).to(dtype_accum)
+                    hist = torch.stack(hist, dim=0).to(dtype_hi)
                     convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
 
                 # Final update step
@@ -720,13 +712,13 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
                         y_convolution_sum = tuple(
                             torch.tensordot(
                                 b_vals,
-                                torch.stack([hist_item[i].to(dtype_accum) for hist_item in hist], dim=0),
+                                torch.stack([hist_item[i].to(dtype_hi) for hist_item in hist], dim=0),
                                 dims=([0], [0]),
                             )
                             for i in range(len(hist[0]))
                         )
                     else:
-                        hist = torch.stack(hist, dim=0).to(dtype_accum)
+                        hist = torch.stack(hist, dim=0).to(dtype_hi)
                         y_convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
 
                     # CHANGED: Use in-place multiplication
