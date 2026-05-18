@@ -539,7 +539,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
              With the initial value y0 in the first row
         """
     with torch.no_grad():
-        print(f'dtype of y0[0]: {y0[0].dtype}')
+        #print(f'dtype of y0[0]: {y0[0].dtype}')
         N = len(tspan)
         h = (tspan[-1] - tspan[0]) / (N - 1)
         h = torch.abs(h)
@@ -547,17 +547,16 @@ def forward_predictor(func, y0, beta, tspan, **options):
         h_beta_over_beta = torch.pow(h, beta) / beta
 
         fhistory = []
+        dtype_hi = options.get('dtype_hi')
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
-            device = y0[0].device
-            dtype_hi = options.get("dtype_hi", y0[0].dtype)
-            print(f'Dtype of y0[0]: {dtype_hi}')
+            device = y0[0].device            
         else:
             device = y0.device
-            dtype_hi = options.get("dtype_hi", y0.dtype)
-            print(f'Dtype of y0: {dtype_hi}')
-        dtype_store = _state_storage_dtype(dtype_hi)
-        dtype_accum = options.get("dtype_hi", torch.float32)
+        #dtype_store = _state_storage_dtype(dtype_hi)
+        #dtype_accum = options.get("dtype_hi", torch.float32)
+        dtype_store = options.get('mp_dtype')
+        dtype_accum = dtype_hi
         yn = _clone(y0)
         yhistory = _StateHistoryBuffer(yn, N, dtype_store)
         # yn = y0
@@ -621,6 +620,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
                 weight_term = _mul_inplace(convolution_sum, gamma_beta)
                 yn = _add(y0, weight_term)
 
+        yn = _cast_state_dtype(yn, dtype_store)
         yhistory.set(N - 1, yn)
         # release memory
         del fhistory
@@ -641,16 +641,18 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
             fy_history = []
 
         y0, adj_y0, adj_params0 = y_aug  ### we will use yhistory rather than compute y again
+        dtype_hi = options.get("dtype_hi")
+
         if _is_tuple(adj_y0):
             device = adj_y0[0].device
-            dtype_hi = options.get("dtype_hi", adj_y0[0].dtype)
         else:
             device = adj_y0.device
-            dtype_hi = options.get("dtype_hi", adj_y0.dtype)
+        dtype_store = options.get('mp_dtype')
         #dtype_store = _state_storage_dtype(dtype_hi)
-        dtype_store = yhistory[0][0].dtype
-        dtype_accum = options.get("dtype_hi", torch.float32)
-        print(f"Backward predictor: using dtype high of {dtype_hi}, {dtype_accum} for accumulations and {dtype_store} for storage.")
+        #dtype_store = yhistory[0][0].dtype
+        #dtype_accum = options.get("dtype_hi", torch.float32)
+        dtype_accum = dtype_hi
+        #print(f"Backward predictor: using dtype high of {dtype_hi}, {dtype_accum} for accumulations and {dtype_store} for storage.")
 
         adj_y = _clone(adj_y0)
         adj_params = _clone(adj_params0)

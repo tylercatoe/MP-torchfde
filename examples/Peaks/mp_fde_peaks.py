@@ -20,21 +20,6 @@ import torch.nn as nn
 # Configuration
 # =============================================================================
 
-@dataclass
-class FDEConfig: 
-    beta: float = 0.5
-    T: float = 1.0
-    step_size: float = 0.1
-    method: str = 'predictor-f'
-    memory: int = -1
-    return_history: bool = False
-    dtype_hi: Optional[torch.dtype] = None
-
-    # Multi-term FDE Settings
-    multi_beta: Optional[List[float]] = None
-    multi_coefficient: Optional[List[float]] = None
-    learn_coefficient: bool = False
-
 DIRECT_METHODS = {
     'predictor',
     'l1',
@@ -52,15 +37,6 @@ ADJOINT_METHODS = {
     'trap-f',
     'trap-o',
 }
-
-@dataclass
-class ModeConfig:
-    name: str
-    use_adjoint: bool
-    method: str
-    autocast_dtype: Optional[torch.dtype] = None
-    loss_scaler: Any = False
-    dtype_hi: Optional[torch.dtype] = None
 
 def parse_args() -> argparse.Namespace: 
     parser = argparse.ArgumentParser(description="Peaks example for FDEs with the multi-precision adjoint method.")
@@ -96,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", type=str, default="adjoint", choices=["direct", "adjoint", "adjoint-mixed", "adjoint-mixed-bfloat"], help="Training mode to run")
     parser.add_argument('--adjoint_method', type=str, default='predictor-f', choices=sorted(ADJOINT_METHODS), help='Adjoint method to use for training')
     parser.add_argument('--direct_method', type=str, default='predictor', choices=sorted(DIRECT_METHODS), help='Direct method to use for FDE integration')
-    parser.add_argument('--mp_dtype', type=str, default='float16', choices = ['float16', 'bfloat16'], help='Datatype to use for multi-precision training (e.g., float16, bfloat16)')
+    parser.add_argument('--mp_dtype', type=str, default='float32', choices = ['float16', 'bfloat16', 'float32'], help='Datatype to use for multi-precision training (e.g., float16, bfloat16, or float32)')
     parser.add_argument('--mp_loss_scaler', type=str, default='auto', choices=['auto','dynamic','false'], help='Loss scaler to use for multi-precision training (e.g., auto, dynamic, or a fixed float value)')
 
     # Other Settings
@@ -104,6 +80,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--gpu', type=int, default=0, help='GPU id to use for training (e.g., 0, 1, etc.)')
 
     return parser.parse_args()
+
+@dataclass
+class FDEConfig: 
+    beta: float = 0.5
+    T: float = 1.0
+    step_size: float = 0.1
+    method: str = 'predictor-f'
+    memory: int = -1
+    return_history: bool = False
+    dtype_hi: Optional[torch.dtype] = None
+    mp_dtype: Optional[torch.dtype] = None
+
+    # Multi-term FDE Settings
+    multi_beta: Optional[List[float]] = None
+    multi_coefficient: Optional[List[float]] = None
+    learn_coefficient: bool = False
+
+@dataclass
+class ModeConfig:
+    name: str
+    use_adjoint: bool
+    method: str
+    autocast_dtype: Optional[torch.dtype] = None
+    loss_scaler: Any = False
+    dtype_hi: Optional[torch.dtype] = None
+    mp_dtype: Optional[torch.dtype] = None
 
 class ODEFunc(nn.Module):
     def __init__(self, width: int, num_layers: int = 3):
@@ -141,6 +143,7 @@ class FDEBlock(nn.Module):
             'memory': cfg.memory,
             'return_history': cfg.return_history,
             'dtype_hi': cfg.dtype_hi,
+            'dtype_store': cfg.mp_dtype
         }
         beta = torch.tensor(cfg.beta, device=x.device, dtype=x.dtype)
         
@@ -170,11 +173,15 @@ class MPFDE_Peaks(nn.Module):
         self.fc_out = nn.Linear(width, self.dim_out)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        print(f'\nData passed to foward is {x.dtype}')
         out = self.fc_in(x)
         out = torch.tanh(out)
+        print(f'After inital layer, data is {out.dtype}')
         out = self.fde_block(out)
+        print(f'After FDE block, out is {out.dtype}')
         out = torch.tanh(out)
         out = self.fc_out(out)
+        print(f'Returining out with {out.dtype}')
         return out
 
 # =============================================================================
@@ -390,6 +397,7 @@ def train(
     else:
         logger.info('No loss scaler will be used')
 
+    print('Getting data')
     # Generate data
     data, targets = generate_peaks_data(args.num_samples)
     train_size = int(args.num_samples * (1 - args.test_split))
@@ -397,6 +405,7 @@ def train(
     test_data, test_targets = data[train_size:], targets[train_size:]
     train_data, train_targets = train_data.to(device), train_targets.to(device)
     test_data, test_targets = test_data.to(device), test_targets.to(device)
+    print(f'Data has initial type {train_data.dtype}')
 
     fde_config = FDEConfig(
         beta = args.beta,
@@ -414,6 +423,7 @@ def train(
         f'  method={fde_config.method}'
     )
     
+    print('Building model...')
     fdeint_solver = build_solver(mode_config)
     model = MPFDE_Peaks(width=args.width, num_layers=args.num_layers, fde_config=fde_config, fdeint_solver=fdeint_solver).to(device)
 
@@ -441,6 +451,9 @@ def train(
     train_start = time.perf_counter()
 
     for iteration in range(args.nepochs):
+        print('-'*30)
+        print(f'Iteration ', iteration)
+        print('-'*30)
         if device.type == 'cuda':
             torch.cuda.reset_peak_memory_stats(device)
 
@@ -452,16 +465,16 @@ def train(
             end = min(start + args.batch_size, train_size)
             xy_batch = xy_epoch[start:end].to(device, non_blocking=True)
             z_batch = z_epoch[start:end].to(device, non_blocking=True)
-            print(f"Before autocast: xy_batch dtype={xy_batch.dtype}, z_batch dtype={z_batch.dtype}")
 
             optimizer.zero_grad(set_to_none=True)
             
             if mode_config.autocast_dtype is not None:
+                print('Using Autocast')
                 with torch.autocast(device_type=device.type, dtype=mode_config.autocast_dtype):
-                    print(f"Inside autocast: xy_batch dtype={xy_batch.dtype}, z_batch dtype={z_batch.dtype}")
                     pred = model(xy_batch)
                     loss = criterion(pred.squeeze(), z_batch)
             else:
+                print('Not using autocast')                
                 pred = model(xy_batch)
                 loss = criterion(pred.squeeze(), z_batch)
 
@@ -476,8 +489,13 @@ def train(
             train_step_peak_mem_mb = max(train_step_peak_mem_mb, get_peak_memory_usage(device))
         
         epoch_time = train_end - epoch_start_time
-        train_mse = evaluate_mse(model, train_data, train_targets)
-        test_mse = evaluate_mse(model, test_data, test_targets)
+        if mode_config.autocast_dtype is not None:
+            with torch.autocast(device_type=device.type, dtype=mode_config.autocast_dtype):
+                train_mse = evaluate_mse(model, train_data, train_targets)
+                test_mse = evaluate_mse(model, test_data, test_targets)
+        else: 
+            train_mse = evaluate_mse(model, train_data, train_targets)
+            test_mse = evaluate_mse(model, test_data, test_targets)
         model.train()
         best_test_mse = min(best_test_mse, test_mse)
         last_test_mse = test_mse
@@ -513,7 +531,11 @@ def train(
     train_time_s = time.perf_counter() - train_start
     train_step_peak_mem_mb = train_step_peak_mem_mb if device.type == 'cuda' else 0.0
 
-    inf_time, inf_mem, _ = measure_inference(model, device, 500)
+    if mode_config.autocast_dtype is not None:
+        with torch.autocast(device_type=device.type, dtype=mode_config.autocast_dtype):
+            inf_time, inf_mem, _ = measure_inference(model, device, 500)
+    else:
+        inf_time, inf_mem, _ = measure_inference(model, device, 500)
 
     logger.info(
         f'Final Results | '
@@ -539,6 +561,7 @@ def train(
 if __name__ == "__main__":
 
     args = parse_args()
+    print(args)
     seed_everything(args.seed)
 
     device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
