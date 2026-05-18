@@ -557,7 +557,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
         yn = _clone(y0)
         yhistory = _StateHistoryBuffer(yn, N, dtype_low)
         # yn = y0
-        print(f"Forward predictor: using dtype high of {dtype_hi} for accumulations and {dtype_low} for storage.")
+        #print(f"Forward predictor: using dtype high of {dtype_hi} for accumulations and {dtype_low} for storage.")
 
         for k in range(N - 1):
             tn = tspan[k]
