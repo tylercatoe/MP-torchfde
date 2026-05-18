@@ -401,7 +401,7 @@ def train(
     else:
         logger.info('No loss scaler will be used')
 
-    print('Getting data')
+    #print('Getting data')
     # Generate data
     data, targets = generate_peaks_data(args.num_samples)
     train_size = int(args.num_samples * (1 - args.test_split))
@@ -409,7 +409,7 @@ def train(
     test_data, test_targets = data[train_size:], targets[train_size:]
     train_data, train_targets = train_data.to(device), train_targets.to(device)
     test_data, test_targets = test_data.to(device), test_targets.to(device)
-    print(f'Data has initial type {train_data.dtype}')
+    #print(f'Data has initial type {train_data.dtype}')
 
     fde_config = FDEConfig(
         beta = args.beta,
@@ -428,7 +428,7 @@ def train(
         f'  method={fde_config.method}'
     )
     
-    print('Building model...')
+    #print('Building model...')
     fdeint_solver = build_solver(mode_config)
     model = MPFDE_Peaks(width=args.width, num_layers=args.num_layers, fde_config=fde_config, fdeint_solver=fdeint_solver).to(device)
 
