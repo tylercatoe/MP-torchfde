@@ -41,7 +41,7 @@ ADJOINT_METHODS = {
 def parse_args() -> argparse.Namespace: 
     parser = argparse.ArgumentParser(description="Peaks example for FDEs with the multi-precision adjoint method.")
     
-    # Training Settings
+    # Training and NetworkSettings
     parser.add_argument('--width', type=int, default=64, help='Width of the hidden layers in the model')
     parser.add_argument('--nepochs', type=int, default=160, help='Number of epochs to train')
     parser.add_argument('--batch_size', type=int, default=500, help='Batch size for training')
@@ -229,7 +229,7 @@ def get_peak_memory_usage(device: torch.device) -> float:
     if device.type == 'cuda':
         return torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
     else:
-        return 0
+        return 0.0
     
 def dtype_from_name(name: str) -> torch.dtype:
     if name == 'float16':
@@ -265,7 +265,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
     direct_method = args.direct_method
     
     mp_dtype = dtype_from_name(args.mp_dtype)
-    #dtype_hi = dtype_from_name(args.dtype_hi) if args.dtype_hi is not None else None
+    
     if args.mp_loss_scaler == 'auto':
         mp_scaler_mode = 'dynamic' if mp_dtype == torch.float16 else "false"
     else:
@@ -326,6 +326,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
 def build_solver(mode_config: ModeConfig): 
     if mode_config.use_adjoint:
         from torchfde import fdeint_adjoint
+
         def solver(func, y0, beta, t, step_size, method, options=None):
             return fdeint_adjoint(
                 func,
@@ -370,12 +371,7 @@ def measure_inference(model: nn.Module, device: torch.device, num_inf: int = 100
     
     return elapsed_time, peak_mb, mse
 
-# Check the output, this seems unnecessary 
-def train(
-    args: argparse.Namespace,
-    mode_config: ModeConfig,
-    device: torch.device
-) -> Dict[str, float]: 
+def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.device) -> Dict[str, float]: 
     mode_save_dir = os.path.join(args.save, mode_config.name)
     os.makedirs(mode_save_dir, exist_ok=True)
 
@@ -432,15 +428,11 @@ def train(
     fdeint_solver = build_solver(mode_config)
     model = MPFDE_Peaks(width=args.width, num_layers=args.num_layers, fde_config=fde_config, fdeint_solver=fdeint_solver).to(device)
 
-    logger.info(f'Model architecture:\n{model}')
-    logger.info(f'Model has {count_parameters(model):,} trainable parameters')
+    logger.info(f'\n\nModel architecture:\n{model}')
+    logger.info(f'\nModel has {count_parameters(model):,} trainable parameters\n')
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=args.nepochs,
-        eta_min=1e-4,
-    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.nepochs, eta_min=1e-4)
     criterion = nn.MSELoss()
 
     best_test_mse = float('inf')
