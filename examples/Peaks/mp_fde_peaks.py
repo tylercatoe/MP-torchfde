@@ -505,15 +505,15 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
             f'Test MSE {test_mse:.6f} | '
             f'Best Test MSE {best_test_mse:.6f}'
         )
-        # print(
-        #     f'Epoch {iteration:03d} | '
-        #     f'Time {epoch_time:.2f}s | '
-        #     f'Peak Mem {train_step_peak_mem_mb:.2f} MB | '
-        #     f'LR {lr:.4e} | '
-        #     f'Train MSE {train_mse:.6f} | '
-        #     f'Test MSE {test_mse:.6f} | '
-        #     f'Best Test MSE {best_test_mse:.6f}'
-        # )
+        print(
+            f'Epoch {iteration:03d} | '
+            f'Time {epoch_time:.2f}s | '
+            f'Peak Mem {train_step_peak_mem_mb:.2f} MB | '
+            f'LR {lr:.4e} | '
+            f'Train MSE {train_mse:.4f} | '
+            f'Test MSE {test_mse:.4f} | '
+            f'Best Test MSE {best_test_mse:.4f}'
+        )
 
         if device.type == 'cuda':
             torch.cuda.synchronize(device)
@@ -549,6 +549,15 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
         f'Inference Time {inf_time:.4f}s | '
         f'Inference Peak Mem {inf_mem:.2f} MB | '
      )
+    # print(
+    #     f'Final Results | '
+    #     f'Final Test MSE {last_test_mse:.6f} | '
+    #     f'Best Test MSE {best_test_mse:.6f} | '
+    #     f'Train Memory {train_step_peak_mem_mb:.2f} MB | '
+    #     f'Train Time {train_time_s:.2f} s | '
+    #     f'Inference Time {inf_time:.4f}s | '
+    #     f'Inference Peak Mem {inf_mem:.2f} MB | '
+    #  )
     
     return {
         "mode": mode_config.name,
