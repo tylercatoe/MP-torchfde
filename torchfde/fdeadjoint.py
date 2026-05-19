@@ -522,6 +522,10 @@ class FDEAdjointMethodUnscaledSafe(torch.autograd.Function):
 # Backward-compat alias.
 FDEAdjointMethod = FDEAdjointMethodUnscaled
 
+@torch.compile
+def weighted_sum_fused(b_vals, hist):
+    view_shape = (b_vals.shape[0],) + (1,) * (hist.ndim - 1)
+    return (b_vals.view(view_shape) * hist).sum(dim=0)
 
 def forward_predictor(func, y0, beta, tspan, **options):
     """Use one-step Adams-Bashforth (Euler) method to integrate Caputo equation
@@ -546,27 +550,30 @@ def forward_predictor(func, y0, beta, tspan, **options):
         gamma_beta = 1 / math.gamma(beta)
         h_beta_over_beta = torch.pow(h, beta) / beta
 
-        fhistory = []
         dtype_hi = options.get('dtype_hi')
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
-            device = y0[0].device            
+            device = y0[0].device
+            batch_size, width = y0[0].shape            
         else:
             device = y0.device
+            batch_size, width = y0.shape
         dtype_low = options.get('mp_dtype')
+
+        fhistory = torch.zeros(N, batch_size, width, dtype=dtype_low, device=device)
+        
         yn = _clone(y0)
         yhistory = _StateHistoryBuffer(yn, N, dtype_low)
         # yn = y0
-        #print(f"Forward predictor: using dtype high of {dtype_hi} for accumulations and {dtype_low} for storage.")
+        
 
         for k in range(N - 1):
             tn = tspan[k]
 
             with torch.autocast(device_type='cuda', dtype=dtype_low):
                 f_k = func(tn, yn)
-
-            #fhistory.append(_cast_state_dtype(f_k, dtype_store))
-            fhistory.append(f_k)
+                fhistory[k] = f_k[0]
+            
             yhistory.set(k, yn)
 
             if 'memory' not in options or options['memory'] == -1:
@@ -575,47 +582,19 @@ def forward_predictor(func, y0, beta, tspan, **options):
                 memory_length = min(options['memory'], k + 1)
                 assert memory_length > 0, "memory must be greater than 0"
 
-            start_idx = max(0, k + 1 - memory_length)
-
-            j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
-
-            b_j_k_1 = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta))
-
-            convolution_sum = None
-
             with torch.autocast(device_type='cuda', enabled=False):
-                hist = fhistory[start_idx : k + 1]
-                #hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fhistory[start_idx : k + 1]]
-                b_vals = b_j_k_1.reshape(-1).to(dtype_hi) # Flatten b_j_k_1 and use high-precision accumulation
+                start_idx = max(0, k + 1 - memory_length)
 
-                if _is_tuple(hist[0]):
-                    # If the history elements are tuples, we need to handle each component separately
-                    convolution_sum = tuple(
-                        torch.tensordot(
-                            b_vals,
-                            torch.stack([h[i].to(dtype_hi) for h in hist], dim=0),
-                            dims=([0],[0]),
-                        )
-                        for i in range(len(hist[0]))
-                    )
-                else:
-                    hist = torch.stack(hist, dim=0).to(dtype_hi)
-                    convolution_sum = torch.tensordot(b_vals, hist, dims=([0],[0]))  # Vectorized computation of convolution sum for non-tuple case
+                j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
 
-                # for j in range(start_idx, k + 1):
-                #     local_idx = j - start_idx  # CHANGED: Use local index for b_j_k_1
-                #     if convolution_sum is None:
-                #         convolution_sum = _multiply(b_j_k_1[local_idx], fhistory[j])
-                #     else:
-                #         # convolution_sum = _add(convolution_sum, _multiply(b_j_k_1[local_idx], fhistory[j]))
-                #         #_addmul_inplace(target, source, alpha):
-                #         # In-place fused multiply-add operation: target += alpha * source
-                #         convolution_sum = _addmul_inplace(convolution_sum, fhistory[j], b_j_k_1[local_idx])
+                b_vals = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)).reshape(-1)
 
+                hist = fhistory[start_idx : k + 1,:,:]
+                convolution_sum = (b_vals[:, None, None] * hist).sum(dim=0)
+                
                 # Final update step
-                # weight_term = _multiply(gamma_beta, convolution_sum)
                 weight_term = _mul_inplace(convolution_sum, gamma_beta)
-                yn = _add(y0, weight_term)
+                yn = (y0[0] + weight_term.squeeze(0),)
 
         yn = _cast_state_dtype(yn, dtype_low)
         yhistory.set(N - 1, yn)
@@ -633,19 +612,20 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
         # CHANGED: Pre-compute h^beta/beta for efficiency
         h_beta_over_beta = torch.pow(h, beta) / beta
 
-        fadj_history = []
-        if yhistory is None:  # CHANGED: Fixed condition (was "if True:")
-            fy_history = []
-
         y0, adj_y0, adj_params0 = y_aug  ### we will use yhistory rather than compute y again
+        if _is_tuple(adj_y0):
+            device = adj_y0[0].device
+            batch_size, width = y0[0].shape
+        else:
+            device = adj_y0.device
+            batch_size, width = y0.shape
         dtype_hi = options.get("dtype_hi")
         dtype_low = options.get('mp_dtype')
 
-        if _is_tuple(adj_y0):
-            device = adj_y0[0].device
-        else:
-            device = adj_y0.device
-        
+        fadj_history = torch.zeros(N, batch_size, width, dtype=dtype_low, device=device)
+        if yhistory is None:  # CHANGED: Fixed condition (was "if True:")
+            fy_history = []
+      
         adj_y = _clone(adj_y0)
         adj_params = _clone(adj_params0)
         y = _clone(y0)
@@ -660,70 +640,39 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
                 memory_length = min(options['memory'], k + 1)
                 assert memory_length > 0, "memory must be greater than 0"
 
-            # CHANGED: Corrected start_idx calculation
-            start_idx = max(0, k + 1 - memory_length)
-
-            # CHANGED: j_vals now starts from start_idx instead of 0
-            j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
-
-            # CHANGED: Use torch.pow and pre-computed h_beta_over_beta
-            b_j_k_1 = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta))
-
             with torch.autocast(device_type='cuda', dtype=dtype_low):
                 func_eval, vjp_y, vjp_params = func(tn, (y, adj_y, adj_params))
-
-            #fadj_history.append(_cast_state_dtype(vjp_y, dtype_low))
-            fadj_history.append(vjp_y)
+                fadj_history[k] = vjp_y[0]
 
             if yhistory is None:
-                #fy_history.append(_cast_state_dtype(func_eval, dtype_store))
                 fy_history.append(func_eval)
 
-            #hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fadj_history[start_idx : k + 1]]
-            hist = fadj_history[start_idx : k + 1]
-            b_vals = b_j_k_1.reshape(-1).to(dtype_hi)
 
             with torch.autocast(device_type='cuda', enabled=False):
-                if _is_tuple(hist[0]):
-                    convolution_sum = tuple(
-                        torch.tensordot(
-                            b_vals,
-                            torch.stack([hist_item[i].to(dtype_hi) for hist_item in hist], dim=0),
-                            dims=([0], [0]),
-                        )
-                        for i in range(len(hist[0]))
-                    )
-                else:
-                    hist = torch.stack(hist, dim=0).to(dtype_hi)
-                    convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
+                start_idx = max(0, k + 1 - memory_length)
+                # CHANGED: j_vals now starts from start_idx instead of 0
+                j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
+                # CHANGED: Use torch.pow and pre-computed h_beta_over_beta
+                b_vals = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)).reshape(-1)
+                hist = fadj_history[start_idx : k + 1,:,:]
 
+                convolution_sum = (b_vals[:, None, None] * hist).sum(dim=0)
+        
                 # Final update step
                 # CHANGED: Use in-place multiplication
                 weight_term = _mul_inplace(convolution_sum, gamma_beta)
-                adj_y = _add(adj_y0, weight_term)
+                adj_j = (adj_y0[0] + weight_term.squeeze(0),)
 
                 # Handle y update
                 if yhistory is not None and k < N - 1:
                     y = _cast_state_like(yhistory[k + 1], y)
                 elif yhistory is None:
-                    #hist = [_cast_state_dtype(hist_item, dtype_hi) for hist_item in fy_history[start_idx : k + 1]]
-                    hist = fy_history[start_idx : k + 1]
-                    if _is_tuple(hist[0]):
-                        y_convolution_sum = tuple(
-                            torch.tensordot(
-                                b_vals,
-                                torch.stack([hist_item[i].to(dtype_hi) for hist_item in hist], dim=0),
-                                dims=([0], [0]),
-                            )
-                            for i in range(len(hist[0]))
-                        )
-                    else:
-                        hist = torch.stack(hist, dim=0).to(dtype_hi)
-                        y_convolution_sum = torch.tensordot(b_vals, hist, dims=([0], [0]))
-
+                    hist = fadj_history[start_idx : k + 1, :, :]
+                    y_convolution_sum = (b_vals[:, None, None] * hist).sum(dim=0)
+                    
                     # CHANGED: Use in-place multiplication
                     y_weight_term = _mul_inplace(y_convolution_sum, gamma_beta)
-                    y = _add(y0, y_weight_term)
+                    y = (y0[0] + y_weight_term.squeeze(0),)
 
                 # Update parameter gradients - already using in-place operation, good!
                 if adj_params and vjp_params:
