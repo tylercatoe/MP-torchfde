@@ -13,36 +13,23 @@ Epoch 003 | Time 70.26s | Peak Mem 61898.69 MB | LR 1.0000e-04 | Train Acc 0.165
 ------------------------------
 Adjoint
 ------------------------------
-
-------------------------------  STL10 Tests  ------------------------------
-
-------------------------------
-Direct
-------------------------------
-Epoch 001 | Time 70.41s | Peak Mem 61898.69 MB | LR 7.5025e-02 | Train Acc 0.1042 | Val Acc 0.0830 | Best 0.0830
-Epoch 002 | Time 70.05s | Peak Mem 61898.69 MB | LR 2.5075e-02 | Train Acc 0.1143 | Val Acc 0.1060 | Best 0.1060
-Epoch 003 | Time 70.20s | Peak Mem 61898.69 MB | LR 1.0000e-04 | Train Acc 0.1653 | Val Acc 0.1500 | Best 0.1500
-
-------------------------------
-Adjoint
-------------------------------
-Epoch 001 | Time 79.09s | Peak Mem 36942.47 MB | LR 7.5025e-02 | Train Acc 0.1042 | Val Acc 0.0830 | Best 0.0830
-Epoch 002 | Time 76.96s | Peak Mem 36942.47 MB | LR 2.5075e-02 | Train Acc 0.1022 | Val Acc 0.0910 | Best 0.0910
-Epoch 003 | Time 76.96s | Peak Mem 36942.47 MB | LR 1.0000e-04 | Train Acc 0.1052 | Val Acc 0.0880 | Best 0.0910
+Epoch 001 | Time 79.12s | Peak Mem 36430.47 MB | LR 7.5025e-02 | Train Acc 0.1042 | Val Acc 0.0830 | Best 0.0830
+Epoch 002 | Time 76.97s | Peak Mem 36430.47 MB | LR 2.5075e-02 | Train Acc 0.1022 | Val Acc 0.0910 | Best 0.0910
+Epoch 003 | Time 77.06s | Peak Mem 36430.47 MB | LR 1.0000e-04 | Train Acc 0.1030 | Val Acc 0.0800 | Best 0.0910
 
 ------------------------------
 Adjoint MP with float16
 ------------------------------
-Epoch 001 | Time 71.09s | Peak Mem 24673.16 MB | LR 7.5025e-02 | Train Acc 0.1042 | Val Acc 0.0830 | Best 0.0830
-Epoch 002 | Time 68.85s | Peak Mem 24673.16 MB | LR 2.5075e-02 | Train Acc 0.1047 | Val Acc 0.0920 | Best 0.0920
-Epoch 003 | Time 68.92s | Peak Mem 24673.16 MB | LR 1.0000e-04 | Train Acc 0.1047 | Val Acc 0.0820 | Best 0.0920
+Epoch 001 | Time 124.14s | Peak Mem 24417.16 MB | LR 7.5025e-02 | Train Acc 0.1042 | Val Acc 0.0830 | Best 0.0830
+Epoch 002 | Time 120.55s | Peak Mem 24417.16 MB | LR 2.5075e-02 | Train Acc 0.1022 | Val Acc 0.0910 | Best 0.0910
+Epoch 003 | Time 121.66s | Peak Mem 24417.16 MB | LR 1.0000e-04 | Train Acc 0.1042 | Val Acc 0.0800 | Best 0.0910
 
 ------------------------------
 Adjoint MP with bfloat16
 ------------------------------
-Epoch 001 | Time 64.58s | Peak Mem 24411.22 MB | LR 7.5025e-02 | Train Acc 0.1042 | Val Acc 0.0830 | Best 0.0830
-Epoch 002 | Time 62.89s | Peak Mem 24411.22 MB | LR 2.5075e-02 | Train Acc 0.1022 | Val Acc 0.0910 | Best 0.0910
-Epoch 003 | Time 62.93s | Peak Mem 24411.22 MB | LR 1.0000e-04 | Train Acc 0.1052 | Val Acc 0.0840 | Best 0.0910
+Epoch 001 | Time 65.06s | Peak Mem 24155.22 MB | LR 7.5025e-02 | Train Acc 0.1042 | Val Acc 0.0830 | Best 0.0830
+Epoch 002 | Time 63.37s | Peak Mem 24155.22 MB | LR 2.5075e-02 | Train Acc 0.1022 | Val Acc 0.0910 | Best 0.0910
+Epoch 003 | Time 63.32s | Peak Mem 24155.22 MB | LR 1.0000e-04 | Train Acc 0.1042 | Val Acc 0.0880 | Best 0.0910
 ```
 
 Experiment Parameters:
