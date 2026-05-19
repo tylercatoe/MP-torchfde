@@ -663,14 +663,14 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
                 # Final update step
                 # CHANGED: Use in-place multiplication
                 weight_term = _mul_inplace(convolution_sum, gamma_beta)
-                adj_j = (adj_y0[0] + weight_term.squeeze(0),)
+                adj_y = (adj_y0[0] + weight_term.squeeze(0),)
 
                 # Handle y update
                 if yhistory is not None and k < N - 1:
                     y = _cast_state_like(yhistory[k + 1], y)
                 elif yhistory is None:
-                    hist = fadj_history[start_idx : k + 1, :, :]
-                    y_convolution_sum = (b_vals[:, None, None] * hist).sum(dim=0)
+                    hist = fadj_history[start_idx : k + 1, ...]
+                    y_convolution_sum = (b_vals * hist).sum(dim=0)
                     
                     # CHANGED: Use in-place multiplication
                     y_weight_term = _mul_inplace(y_convolution_sum, gamma_beta)
