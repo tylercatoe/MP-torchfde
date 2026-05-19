@@ -123,6 +123,7 @@ class DynamicScaler:
 
         initial_S = self.S
         for _ in range(20):
+            #print('updating S')
             if (self.S * a).isfinite().all():
                 break
             self.S *= 0.5
@@ -138,6 +139,7 @@ class DynamicScaler:
         self.scale_history.append(("init", self.S))
 
     def update_on_overflow(self) -> None:
+        #print('Udate on overflow used!')
         old_S = self.S
         self.S *= self.decrease_factor
         if self.verbose:
@@ -145,10 +147,12 @@ class DynamicScaler:
         self.scale_history.append(("overflow", self.S))
 
     def check_for_increase(self, a: torch.Tensor) -> bool:
+        #print('check for increase used!')
         a_max = a.abs().max()
         return (a_max / self.target).item() < 0.5
 
     def update_on_small_grad(self) -> None:
+        #print('Update on small grad used!')
         old_S = self.S
         self.S *= self.increase_factor
         if self.verbose:
@@ -669,8 +673,8 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
                 if yhistory is not None and k < N - 1:
                     y = _cast_state_like(yhistory[k + 1], y)
                 elif yhistory is None:
-                    hist = fadj_history[start_idx : k + 1, ...]
-                    y_convolution_sum = (b_vals * hist).sum(dim=0)
+                    hist = fadj_history[start_idx : k + 1, :, :]
+                    y_convolution_sum = (b_vals[:, None, None] * hist).sum(dim=0)
                     
                     # CHANGED: Use in-place multiplication
                     y_weight_term = _mul_inplace(y_convolution_sum, gamma_beta)
