@@ -29,7 +29,7 @@ fi
 run_size="${1:-pilot}"  # pilot | full
 
 if [ "$run_size" = "full" ]; then
-  epochs="${FULL_EPOCHS:-160}"
+  epochs="${FULL_EPOCHS:-5000}"
   save_root="${SAVE_ROOT:-exp_mp_peaks}"
   echo "Submitting FULL run (epochs=$epochs)"
 else
@@ -42,25 +42,25 @@ mkdir -p slurm_logs
 
 echo "Submitting direct..."
 job_direct=$(sbatch --parsable --job-name=mp-peaks-direct \
-  --export=ALL,MODE=direct,EPOCHS="$epochs",SAVE_ROOT="$save_root/direct" \
+  --export=ALL,MODE=direct,MP_DTYPE='float32',EPOCHS="$epochs",SAVE_ROOT="$save_root/direct" \
   "$sbatch_script")
 echo "  job_id=$job_direct"
 
 echo "Submitting adjoint..."
 job_adjoint=$(sbatch --parsable --job-name=mp-peaks-adjoint \
-  --export=ALL,MODE=adjoint,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint" \
+  --export=ALL,MODE=adjoint,MP_DTYPE='float32',EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint" \
   "$sbatch_script")
 echo "  job_id=$job_adjoint"
 
 echo "Submitting adjoint-mixed..."
 job_adjmix=$(sbatch --parsable --job-name=mp-peaks-adjmix \
-  --export=ALL,MODE=adjoint-mixed,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed" \
+  --export=ALL,MODE=adjoint-mixed,MP_DTYPE='float16',EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed" \
   "$sbatch_script")
 echo "  job_id=$job_adjmix"
 
 echo "Submitting adjoint-mixed-bfloat..."
 job_adjmix_bf=$(sbatch --parsable --job-name=mp-peaks-adjmix-bf16 \
-  --export=ALL,MODE=adjoint-mixed-bfloat,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed-bfloat" \
+  --export=ALL,MODE=adjoint-mixed-bfloat,MP_DTYPE='bfloat16',EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed-bfloat" \
   "$sbatch_script")
 echo "  job_id=$job_adjmix_bf"
 
