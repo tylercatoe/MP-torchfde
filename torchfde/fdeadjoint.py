@@ -553,14 +553,12 @@ def forward_predictor(func, y0, beta, tspan, **options):
         dtype_hi = options.get('dtype_hi')
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
-            device = y0[0].device
-            batch_size, width = y0[0].shape            
+            device = y0[0].device        
         else:
             device = y0.device
-            batch_size, width = y0.shape
         dtype_low = options.get('mp_dtype')
 
-        fhistory = torch.zeros(N, batch_size, width, dtype=dtype_low, device=device)
+        fhistory = torch.zeros(N, *y0[0].shape, dtype=dtype_low, device=device)
         
         yn = _clone(y0)
         yhistory = _StateHistoryBuffer(yn, N, dtype_low)
@@ -587,10 +585,13 @@ def forward_predictor(func, y0, beta, tspan, **options):
 
                 j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
 
-                b_vals = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)).reshape(-1)
+                hist = fhistory[start_idx : k + 1, ...]
 
-                hist = fhistory[start_idx : k + 1,:,:]
-                convolution_sum = (b_vals[:, None, None] * hist).sum(dim=0)
+                b_vals = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)).reshape(-1, *([1] * (hist.ndim - 1)))
+                
+          
+                #print(f'bvals now has shape {b_vals.shape}, and hist has size {hist.shape}, fhistory has size {fhistory.shape}')
+                convolution_sum = (b_vals * hist).sum(dim=0)
                 
                 # Final update step
                 weight_term = _mul_inplace(convolution_sum, gamma_beta)
@@ -600,6 +601,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
         yhistory.set(N - 1, yn)
         # release memory
         del fhistory
+        #print('Forward Success!')
         return yn, yhistory
 
 def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
@@ -615,14 +617,12 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
         y0, adj_y0, adj_params0 = y_aug  ### we will use yhistory rather than compute y again
         if _is_tuple(adj_y0):
             device = adj_y0[0].device
-            batch_size, width = y0[0].shape
         else:
             device = adj_y0.device
-            batch_size, width = y0.shape
         dtype_hi = options.get("dtype_hi")
         dtype_low = options.get('mp_dtype')
 
-        fadj_history = torch.zeros(N, batch_size, width, dtype=dtype_low, device=device)
+        fadj_history = torch.zeros(N, *y0[0].shape, dtype=dtype_low, device=device)
         if yhistory is None:  # CHANGED: Fixed condition (was "if True:")
             fy_history = []
       
@@ -652,11 +652,13 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
                 start_idx = max(0, k + 1 - memory_length)
                 # CHANGED: j_vals now starts from start_idx instead of 0
                 j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
-                # CHANGED: Use torch.pow and pre-computed h_beta_over_beta
-                b_vals = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)).reshape(-1)
-                hist = fadj_history[start_idx : k + 1,:,:]
 
-                convolution_sum = (b_vals[:, None, None] * hist).sum(dim=0)
+                hist = fadj_history[start_idx : k + 1, ...]
+
+                # CHANGED: Use torch.pow and pre-computed h_beta_over_beta
+                b_vals = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)).reshape(-1, *([1] * (hist.ndim - 1)))
+                
+                convolution_sum = (b_vals * hist).sum(dim=0)
         
                 # Final update step
                 # CHANGED: Use in-place multiplication
@@ -683,6 +685,7 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
         del fadj_history
         if yhistory is None:  # CHANGED: Only delete fy_history if it was created
             del fy_history
+        #print('Backward Success!')
         return adj_y, adj_params
 
 

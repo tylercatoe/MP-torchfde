@@ -73,8 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learn_coefficient", action="store_true", help="Learn coefficients for multi-term FDE")
 
     # Mode controls
-    parser.add_argument(
-        "--mode", type=str, default='adjoint', choices=["direct", "adjoint", "adjoint-mixed", "adjoint-mixed-bfloat"], help="Training modes to run")
+    parser.add_argument("--mode", type=str, default='adjoint', choices=["direct", "adjoint", "adjoint-mixed", "adjoint-mixed-bfloat"], help="Training modes to run")
     parser.add_argument('--adjoint_method', type=str, default='predictor-f', choices=sorted(ADJOINT_METHODS), help='Adjoint method to use for training')
     parser.add_argument('--direct_method', type=str, default='predictor', choices=sorted(DIRECT_METHODS), help='Direct method to use for FDE integration')
     parser.add_argument('--mp_dtype', type=str, default='float32', choices = ['float16', 'bfloat16', 'float32'], help='Datatype to use for multi-precision training (e.g., float16, bfloat16, or float32)')
@@ -232,11 +231,11 @@ class FDEBlock(nn.Module):
             "mp_dtype": cfg.mp_dtype,
         }
 
-        if self.multi_coefficient is not None:
-            beta = self.multi_beta.to(x.device)
-            options["multi_coefficient"] = self.multi_coefficient.to(x.device)
-        else:
-            beta = torch.tensor(cfg.beta, device=x.device, dtype=x.dtype)
+        # if self.multi_coefficient is not None:
+        #     beta = self.multi_beta.to(x.device)
+        #     options["multi_coefficient"] = self.multi_coefficient.to(x.device)
+        # else:
+        beta = torch.tensor(cfg.beta, device=x.device, dtype=x.dtype)
 
         out = self.fdeint_solver(
             self.odefunc,
@@ -253,8 +252,8 @@ class FDEBlock(nn.Module):
         cfg = self.fde_config
         base = f"beta={cfg.beta}, T={cfg.T}, step_size={cfg.step_size}, method='{cfg.method}'"
         base += f", memory={cfg.memory}, return_history={cfg.return_history}"
-        if self.multi_coefficient is not None:
-            base = f"multi_term=True, beta={list(cfg.multi_beta)}, " + base
+        # if self.multi_coefficient is not None:
+        #     base = f"multi_term=True, beta={list(cfg.multi_beta)}, " + base
         return base
 
 
@@ -304,32 +303,32 @@ class MPFDE_STL10(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        print(f'\nData passed to forward is {x.dtype}')
+        #print(f'\nData passed to forward is {x.dtype}')
         x = self.stem(x)
         x = self.norm1(x)
         x = self.act(x)
-        print(f'\nData after stem is {x.dtype}')
+        #print(f'\nData after stem is {x.dtype}')
 
         x = self.fde1(x)
-        print(f'\nData after FDE block 1 is {x.dtype}')
+        #print(f'\nData after FDE block 1 is {x.dtype}')
         x = self.conn1(x)
         x = self.norm3(x)
         x = self.act(x)
         x = self.avg1(x)
-        print(f'\nData after avg1 is {x.dtype}')
+        #print(f'\nData after avg1 is {x.dtype}')
 
         x = self.fde2(x)
-        print(f'\nData after FDE block 2 is {x.dtype}')
+        #print(f'\nData after FDE block 2 is {x.dtype}')
         x = self.conn2(x)
         x = self.norm4(x)
         x = self.act(x)
         x = self.avg2(x)
-        print(f'\nData after avg2 is {x.dtype}')
+        #print(f'\nData after avg2 is {x.dtype}')
 
         x = self.fde3(x)
-        print(f'\nData after FDE block 3 is {x.dtype}')
+        #print(f'\nData after FDE block 3 is {x.dtype}')
         x = self.head(x)
-        print(f'\nData being returned is {x.dtype}')
+        #print(f'\nData being returned is {x.dtype}')
 
         return x
 
@@ -699,11 +698,12 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
     logger.info(f"\n\nModel architecture:\n{model}")
     logger.info(f"\nTotal parameters: {count_parameters(model):,}\n")
 
+    batches_per_epoch = len(train_loader)
+
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.nepochs * batches_per_epoch, eta_min=1e-4)
     criterion = nn.CrossEntropyLoss()
 
-    batches_per_epoch = len(train_loader)
     logger.info(
         f"Training samples: {len(train_loader.dataset)}, batches/epoch: {batches_per_epoch}"
     )
@@ -727,12 +727,12 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
         
         optimizer.zero_grad(set_to_none=True)
         if mode_cfg.autocast_dtype is not None:
-            print('Using autocast with dtype:', mode_cfg.autocast_dtype)
+            #print('Using autocast with dtype:', mode_cfg.autocast_dtype)
             with torch.autocast(device_type="cuda", dtype=mode_cfg.autocast_dtype):
                 logits = model(x)
                 loss = criterion(logits, y)
         else:
-            print('Not using autocast')
+            #print('Not using autocast')
             logits = model(x)
             loss = criterion(logits, y)
         
@@ -746,10 +746,10 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
 
         if (iteration + 1) % batches_per_epoch == 0:
             epoch = (iteration + 1) // batches_per_epoch
-            epoch_time = time.perf_counter() - epoch_start_time
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
                 train_step_peak_mem_mb = max(train_step_peak_mem_mb, get_peak_memory_mb(device))
+            epoch_time = time.perf_counter() - epoch_start_time
             if mode_cfg.autocast_dtype is not None:
                 with torch.autocast(device_type="cuda", dtype=mode_cfg.autocast_dtype):
                     model.eval()
@@ -774,12 +774,21 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
                 f"Val Acc {val_acc:.4f} | "
                 f"Best {best_acc:.4f}"
             )
+            print(
+                f"Epoch {epoch:03d} | "
+                f"Time {epoch_time:.2f}s | "
+                f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
+                f"LR {lr:.4e} | "
+                f"Train Acc {train_acc:.4f} | "
+                f"Val Acc {val_acc:.4f} | "
+                f"Best {best_acc:.4f}"
+            )
 
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
                 torch.cuda.reset_peak_memory_stats(device)
 
-            epoch_start_time = time.time()
+            epoch_start_time = time.perf_counter()
 
     if not np.isfinite(last_val_acc):
         model.eval()
@@ -925,4 +934,15 @@ if __name__ == "__main__":
     seed_everything(args.seed)
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     mode_cfg = build_mode_configs(args, device)
-    train(args, mode_cfg, device, *get_stl10_loaders(args))
+    train_loader, val_loader, train_eval_loader = get_stl10_loaders(
+        data_root=args.data_root,
+        download_data=args.download_data,
+        batch_size=args.batch_size,
+        test_batch_size=args.test_batch_size,
+        num_workers=args.num_workers,
+        train_size=args.train_size,
+        seed=args.seed,
+    )
+    #print('Data loaders obtained')
+    train(args, mode_cfg, device, train_loader, val_loader, train_eval_loader)
+
