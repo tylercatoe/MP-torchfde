@@ -115,7 +115,7 @@ if [ "$UNSTABLE" = "1" ]; then
 fi
 
 conda run -n "$ENV_NAME" python -u "$driver_script" \
-  --modes "$MODE" \
+  --mode "$MODE" \
   --nepochs "$EPOCHS" \
   --save "$SAVE_ROOT" \
   --data-root "$DATA_ROOT" \
