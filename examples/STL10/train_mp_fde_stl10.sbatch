@@ -29,7 +29,7 @@ DATA_ROOT="${DATA_ROOT:-.data/stl10}"
 DOWNLOAD_DATA="${DOWNLOAD_DATA:-0}"
 
 ADJOINT_METHOD="${ADJOINT_METHOD:-predictor-f}"
-DIRECT_METHOD="${DIRECT_METHOD:-auto}"
+DIRECT_METHOD="${DIRECT_METHOD:-predictor}"
 MP_DTYPE="${MP_DTYPE:-float16}"
 MP_LOSS_SCALER="${MP_LOSS_SCALER:-auto}"
 
@@ -122,8 +122,8 @@ conda run -n "$ENV_NAME" python -u "$driver_script" \
   "$download_arg" \
   --adjoint_method "$ADJOINT_METHOD" \
   --direct_method "$DIRECT_METHOD" \
-  --mp-dtype "$MP_DTYPE" \
-  --mp-loss-scaler "$MP_LOSS_SCALER" \
+  --mp_dtype "$MP_DTYPE" \
+  --mp_loss_scaler "$MP_LOSS_SCALER" \
   --beta "$BETA" \
   --T "$T_FINAL" \
   --step_size "$STEP_SIZE" \
