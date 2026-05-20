@@ -49,19 +49,19 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train/benchmark FDE-based STL10 model with multiple backprop modes")
 
     # Training and Network Settings
-    parser.add_argument("--width", type=int, default=64, help="Base channel width")
+    #parser.add_argument("--width", type=int, default=64, help="Base channel width")
     parser.add_argument("--nepochs", type=int, default=160, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=128, help="Training batch size")
-    parser.add_argument("--test_batch_size", type=int, default=100, help="Validation/eval batch size")
-    parser.add_argument("--lr", type=float, default=0.1, help="Initial learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
-    parser.add_argument("--seed", type=int, default=2016, help="Random seed")
+    parser.add_argument("--batch_size", type=int, default=16, help="Training batch size")
+    parser.add_argument("--test_batch_size", type=int, default=16, help="Validation/eval batch size")
+    parser.add_argument("--lr", type=float, default=0.05, help="Initial learning rate")
+    parser.add_argument("--weight_decay", type=float, default=5e-4, help="Weight decay")
+    parser.add_argument("--seed", type=int, default=25, help="Random seed")
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument("--time-bins", type=int, default=4, help="Piecewise-constant time intervals per FDE block")
     parser.add_argument("--unstable", action="store_true", help="Use unstable (+) dynamics instead of stable (-) dynamics")
 
     # FDE parameters
-    parser.add_argument("--beta", type=float, default=0.5, help="Fractional order")
+    parser.add_argument("--beta", type=float, default=0.6, help="Fractional order")
     parser.add_argument("--T", type=float, default=1.0, help="End time for FDE integration")
     parser.add_argument("--step_size", type=float, default=0.1, help="FDE integration step size")
     parser.add_argument("--memory", type=int, default=-1, help="Memory for FDE adjoint (-1 for full)")
@@ -704,9 +704,7 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.nepochs * batches_per_epoch, eta_min=1e-4)
     criterion = nn.CrossEntropyLoss()
 
-    logger.info(
-        f"Training samples: {len(train_loader.dataset)}, batches/epoch: {batches_per_epoch}"
-    )
+    logger.info(f"Training samples: {len(train_loader.dataset)}, batches/epoch: {batches_per_epoch}")
 
     logger.info(f"Starting training for {args.nepochs} epochs...")
 
