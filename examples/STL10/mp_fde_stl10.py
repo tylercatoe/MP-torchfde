@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train/benchmark FDE-based STL10 model with multiple backprop modes")
 
     # Training and Network Settings
-    #parser.add_argument("--width", type=int, default=64, help="Base channel width")
+    parser.add_argument("--width", type=int, default=64, help="Base channel width")
     parser.add_argument("--nepochs", type=int, default=160, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=16, help="Training batch size")
     parser.add_argument("--test_batch_size", type=int, default=16, help="Validation/eval batch size")
