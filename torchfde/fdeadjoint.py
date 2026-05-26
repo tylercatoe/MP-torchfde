@@ -526,7 +526,7 @@ class FDEAdjointMethodUnscaledSafe(torch.autograd.Function):
 # Backward-compat alias.
 FDEAdjointMethod = FDEAdjointMethodUnscaled
 
-@torch.compile
+#@torch.compile
 def weighted_sum_fused(b_vals, hist):
     view_shape = (b_vals.shape[0],) + (1,) * (hist.ndim - 1)
     return (b_vals.view(view_shape) * hist).sum(dim=0)
@@ -547,31 +547,30 @@ def forward_predictor(func, y0, beta, tspan, **options):
              With the initial value y0 in the first row
         """
     with torch.no_grad():
-        #print(f'dtype of y0[0]: {y0[0].dtype}')
         N = len(tspan)
         h = (tspan[-1] - tspan[0]) / (N - 1)
         h = torch.abs(h)
         gamma_beta = 1 / math.gamma(beta)
         h_beta_over_beta = torch.pow(h, beta) / beta
 
-        dtype_hi = options.get('dtype_hi')
+        dtype_hi = options.get('dtype_hi', torch.float32)
         # Get device from y0 (handle both tensor and tuple cases)
         if _is_tuple(y0):
             device = y0[0].device        
         else:
             device = y0.device
-        dtype_low = options.get('mp_dtype')
+        dtype_low = options.get('mp_dtype', dtype_hi)
 
         fhistory = torch.zeros(N, *y0[0].shape, dtype=dtype_low, device=device)
         
         yn = _clone(y0)
         yhistory = _StateHistoryBuffer(yn, N, dtype_low)
         # yn = y0
-        
+        #print(f'Using dtypes - high: {dtype_hi}, low: {dtype_low}, device: {device}')
 
         for k in range(N - 1):
             tn = tspan[k]
-
+            
             with torch.autocast(device_type='cuda', dtype=dtype_low):
                 f_k = func(tn, yn)
                 fhistory[k] = f_k[0]
