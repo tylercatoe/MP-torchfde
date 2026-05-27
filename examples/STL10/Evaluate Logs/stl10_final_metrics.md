@@ -1,4 +1,4 @@
-# Peaks Final Metrics Summary
+# STL10 Final Metrics Summary
 
 ```text
 mode                 | final_mse | best_mse | train_mem_mb | train_time_s | infer_time_s | infer_mem_mb
