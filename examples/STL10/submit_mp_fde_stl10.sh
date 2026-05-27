@@ -34,19 +34,19 @@ echo "  job_id=$job_direct"
 
 echo "Submitting adjoint..."
 job_adj=$(sbatch --parsable --job-name=mp-stl10-adjoint \
-  --export=ALL,MODE=adjoint,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint",DOWNLOAD_DATA=0 \
+  --export=ALL,MODE=adjoint,MP_DTYPE=float32,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint",DOWNLOAD_DATA=0 \
   "$sbatch_script")
 echo "  job_id=$job_adj"
 
 echo "Submitting adjoint-mixed..."
 job_adjmix=$(sbatch --parsable --job-name=mp-stl10-adjmix \
-  --export=ALL,MODE=adjoint-mixed,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed",DOWNLOAD_DATA=0 \
+  --export=ALL,MODE=adjoint-mixed,MP_DTYPE=float16,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed",DOWNLOAD_DATA=0 \
   "$sbatch_script")
 echo "  job_id=$job_adjmix"
 
 echo "Submitting adjoint-mixed-bfloat..."
 job_adjmix_bf16=$(sbatch --parsable --job-name=mp-stl10-adjmix-bf16 \
-  --export=ALL,MODE=adjoint-mixed-bfloat,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed-bfloat",DOWNLOAD_DATA=0 \
+  --export=ALL,MODE=adjoint-mixed-bfloat,MP_DTYPE=bfloat16,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed-bfloat",DOWNLOAD_DATA=0 \
   "$sbatch_script")
 echo "  job_id=$job_adjmix_bf16"
 
