@@ -476,17 +476,17 @@ def evaluate_accuracy(
 def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def reset_peak_memory(device: torch.device) -> None:
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(device)
-        torch.cuda.synchronize(device)
+# def reset_peak_memory(device: torch.device) -> None:
+#     if device.type == "cuda":
+#         torch.cuda.empty_cache()
+#         torch.cuda.reset_peak_memory_stats(device)
+#         torch.cuda.synchronize(device)
 
-def get_peak_memory_mb(device: torch.device) -> float:
-    if device.type == 'cuda':
-        return torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
-    else:
-        return 0.0
+# def get_peak_memory_mb(device: torch.device) -> float:
+#     if device.type == 'cuda':
+#         return torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
+#     else:
+#         return 0.0
 
 def dtype_from_name(name: str) -> torch.dtype:
     if name == "float16":
@@ -631,15 +631,20 @@ def build_solver(mode_config: ModeConfig):
 
 def measure_inference(model: nn.Module, val_loader: DataLoader, device: torch.device, autocast_dtype: Optional[torch.dtype]) -> Tuple[float, float, float]:
     model.eval()
-    reset_peak_memory(device)
+    #reset_peak_memory(device)
     if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
         torch.cuda.synchronize(device)
     start = time.perf_counter()
     acc = evaluate_accuracy(model, val_loader, device, autocast_dtype=autocast_dtype)
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - start
-    peak_mb = get_peak_memory_mb(device)
+    if device.type == "cuda":
+        peak_mb = torch.cuda.max_memory_allocated(device)
+    else: 
+        peak_mb = 0.0
+    #peak_mb = get_peak_memory_mb(device)
     return elapsed, peak_mb, acc
 
 
@@ -708,22 +713,23 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
 
     logger.info(f"Starting training for {args.nepochs} epochs...")
 
-    reset_peak_memory(device)
+    #reset_peak_memory(device)
     train_step_peak_mem_mb = 0.0
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+
     epoch_start_time = time.perf_counter()
     train_start = time.perf_counter()
 
     for iteration in range(args.nepochs * batches_per_epoch):
-        if device.type == "cuda":
-            torch.cuda.reset_peak_memory_stats(device)
-
+        optimizer.zero_grad(set_to_none=True)
         x, y = next(data_gen)
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
-        
-        optimizer.zero_grad(set_to_none=True)
+
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+
         if mode_cfg.autocast_dtype is not None:
             #print('Using autocast with dtype:', mode_cfg.autocast_dtype)
             with torch.autocast(device_type="cuda", dtype=mode_cfg.autocast_dtype):
@@ -741,12 +747,19 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
         # Keep parameter values in a bounded range like the rampde STL10 script.
         for param in model.parameters():
             param.data.clamp_(-1, 1)
+        
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+            peak_memory = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
+            train_step_peak_mem_mb = max(train_step_peak_mem_mb, peak_memory)
+
+        
 
         if (iteration + 1) % batches_per_epoch == 0:
             epoch = (iteration + 1) // batches_per_epoch
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
-                train_step_peak_mem_mb = max(train_step_peak_mem_mb, get_peak_memory_mb(device))
+                #train_step_peak_mem_mb = max(train_step_peak_mem_mb, get_peak_memory_mb(device))
             epoch_time = time.perf_counter() - epoch_start_time
             if mode_cfg.autocast_dtype is not None:
                 with torch.autocast(device_type="cuda", dtype=mode_cfg.autocast_dtype):
@@ -772,19 +785,19 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
                 f"Val Acc {val_acc:.4f} | "
                 f"Best {best_acc:.4f}"
             )
-            print(
-                f"Epoch {epoch:03d} | "
-                f"Time {epoch_time:.2f}s | "
-                f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
-                f"LR {lr:.4e} | "
-                f"Train Acc {train_acc:.4f} | "
-                f"Val Acc {val_acc:.4f} | "
-                f"Best {best_acc:.4f}"
-            )
+            # print(
+            #     f"Epoch {epoch:03d} | "
+            #     f"Time {epoch_time:.2f}s | "
+            #     f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
+            #     f"LR {lr:.4e} | "
+            #     f"Train Acc {train_acc:.4f} | "
+            #     f"Val Acc {val_acc:.4f} | "
+            #     f"Best {best_acc:.4f}"
+            # )
 
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-                torch.cuda.reset_peak_memory_stats(device)
+            # if device.type == "cuda":
+            #     torch.cuda.synchronize(device)
+            #     torch.cuda.reset_peak_memory_stats(device)
 
             epoch_start_time = time.perf_counter()
 
