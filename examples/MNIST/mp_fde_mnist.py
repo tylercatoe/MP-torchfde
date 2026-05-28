@@ -273,20 +273,17 @@ def learning_rate_with_decay(batch_size, batch_denom, batches_per_epoch, boundar
         return values[i]
     return learning_rate_fn
 
-def one_hot(x, K):
-    return np.array(x[:, None] == np.arange(K)[None, :], dtype=int)
-
 def accuracy(model, dataset_loader):
     total_correct = 0
     num_samples = 0
     for x, y in dataset_loader:
         x = x.to(device)
-        y = one_hot(np.array(y.numpy()), 10)
-        num_samples += x.size(0)
+        y = y.to(device)
+        num_samples += y.size(0)
 
-        target_class = np.argmax(y, axis=1)
-        predicted_class = np.argmax(model(x).cpu().detach().numpy(), axis=1)
-        total_correct += np.sum(predicted_class == target_class)
+        logits = model(x)
+        predicted_class = logits.argmax(dim=1)
+        total_correct += (predicted_class == y).sum().item()
     return total_correct / num_samples
 
 def count_parameters(model):
