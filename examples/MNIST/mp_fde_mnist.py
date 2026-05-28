@@ -569,14 +569,14 @@ if __name__ == "__main__":
             logits = model(x)
             loss = criterion(logits, y)
 
-        if mode_cfg.loss_scaler:
-            scaled_loss = mode_cfg.loss_scaler.scale(loss)
-            scaled_loss.backward()
-            mode_cfg.loss_scaler.step(optimizer)
-            mode_cfg.loss_scaler.update()
-        else:
-            loss.backward()
-            optimizer.step()
+        # if mode_cfg.loss_scaler:
+        #     scaled_loss = mode_cfg.loss_scaler.scale(loss)
+        #     scaled_loss.backward()
+        #     mode_cfg.loss_scaler.step(optimizer)
+        #     mode_cfg.loss_scaler.update()
+        # else:
+        loss.backward()
+        optimizer.step()
 
         if device.type == "cuda":
             torch.cuda.synchronize(device)
