@@ -27,11 +27,11 @@ Experiment Parameters:
 
 - Training Arguments:
     - Downsampling and other things exactly same as Lars
-    - Epochs: 160 just for preliminary smoke tests
+    - Epochs: 160 
     - Batch Size: 16
     - Initial LR: 0.1
     - Momentum: 0.9
-    - GPU: NVIDIA A100 (Palmetto)
+    - GPU: NVIDIA H200 (Palmetto)
 
 Note: 
 - adjoint mode uses adjoint method for gradients but in high precision
