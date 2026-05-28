@@ -7,7 +7,6 @@ keeping the network architecture close to rampde/paper/stl10/ode_stl10.py.
 """
 
 import argparse
-from email import parser
 import logging
 import os
 import random
