@@ -296,7 +296,7 @@ def makedirs(dirname):
     if not os.path.exists(dirname):
         os.makedirs(dirname)
 
-def get_logger(logpath, filepath, package_files=[], displaying=True, saving=True, debug=False):
+def get_logger(logpath, filepath, package_files=[], displaying=False, saving=True, debug=False):
     logger = logging.getLogger()
     if debug:
         level = logging.DEBUG
@@ -312,8 +312,8 @@ def get_logger(logpath, filepath, package_files=[], displaying=True, saving=True
         console_handler.setLevel(level)
         logger.addHandler(console_handler)
     logger.info(filepath)
-    with open(filepath, "r") as f:
-        logger.info(f.read())
+    # with open(filepath, "r") as f:
+    #     logger.info(f.read())
 
     for f in package_files:
         logger.info(f)
@@ -594,14 +594,27 @@ if __name__ == "__main__":
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
                 epoch_time_meter.update(time.time() - end)
-
-                train_acc = accuracy(model, train_eval_loader)
-                val_acc = accuracy(model, test_loader)
+                if mode_cfg.mp_dtype is not None:
+                    with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
+                        train_acc = accuracy(model, train_eval_loader)
+                        val_acc = accuracy(model, test_loader)
+                else:
+                    train_acc = accuracy(model, train_eval_loader)
+                    val_acc = accuracy(model, test_loader)
                 if val_acc > best_acc:
                     torch.save({'state_dict': model.state_dict(), 'args': args}, os.path.join(args.save, 'model.pth'))
                     best_acc = val_acc
                 lr = optimizer.param_groups[0]["lr"]
                 logger.info(
+                    f"Epoch {epoch:03d} | "
+                    f"Time {epoch_time_meter.val:.2f}s | "
+                    f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
+                    f"LR {lr:.4e} | "
+                    f"Train Acc {train_acc:.4f} | "
+                    f"Val Acc {val_acc:.4f} | "
+                    f"Best {best_acc:.4f}"
+                )
+                print(
                     f"Epoch {epoch:03d} | "
                     f"Time {epoch_time_meter.val:.2f}s | "
                     f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
