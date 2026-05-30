@@ -40,6 +40,6 @@ Note:
 - direct mode uses standard backprop with high precision
     
 Training Plot (every 5 epochs):
-![Training plots for peaks full experiment](./stl10_train_acc.png "Peaks full training curves")
+![Training plots for STL10 full experiment](./stl10_train_acc.png "STL10 full training curves")
 
 
