@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """
-MNIST comparison runner for direct backprop, adjoint, and mixed-precision adjoint.
+FashionMNIST comparison runner for direct backprop, adjoint, and mixed-precision adjoint.
 
 The defaults are tuned for planned SLURM runs:
-    - beta = 0.5
-    - T = 20.0
+    - beta = 0.3
+    - T = 1.0
     - step_size = 0.1
     - batch_size = 128
     - conv downsampling (two stride-2 reductions)
@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torchvision.datasets import MNIST
+from torchvision.datasets import FashionMNIST
 import torchvision.transforms as transforms
 
 
@@ -50,7 +50,7 @@ ADJOINT_METHODS = {
 }
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train/benchmark FDE-based MNIST model with multiple backprop modes")
+    parser = argparse.ArgumentParser(description="Train/benchmark FDE-based FashionMNIST model with multiple backprop modes")
 
     # Training and Network Settings
     parser.add_argument("--width", type=int, default=64, help="Base channel width")
@@ -63,8 +63,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers") 
 
     # FDE parameters
-    parser.add_argument("--beta", type=float, default=0.5, help="Fractional order")
-    parser.add_argument("--T", type=float, default=20.0, help="End time for FDE integration")
+    parser.add_argument("--beta", type=float, default=0.3, help="Fractional order")
+    parser.add_argument("--T", type=float, default=1.0, help="End time for FDE integration")
     parser.add_argument("--step_size", type=float, default=0.1, help="FDE integration step size")
     parser.add_argument("--memory", type=int, default=-1, help="Memory for FDE adjoint (-1 for full)")
     parser.add_argument("--return_history", action="store_true", help="Return full state history from FDE solver")
@@ -83,12 +83,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--mp_loss_scaler', type=str, default='auto', choices=['auto','dynamic','false'], help='Loss scaler to use for multi-precision training (e.g., auto, dynamic, or a fixed float value)')
     
     # Data/system settings
-    #parser.add_argument("--data-root", type=str, default=".data/mnist", help="MNIST root directory")
-    #parser.add_argument("--download-data", action="store_true", default=True, help="Download MNIST if missing")
-    #parser.add_argument("--no-download-data", action="store_false", dest="download_data", help="Do not download MNIST")
-    #parser.add_argument("--train-size", type=int, default=4000, help="Size of train subset from MNIST train split")
+    #parser.add_argument("--data-root", type=str, default=".data/fashion_mnist", help="FashionMNIST root directory")
+    #parser.add_argument("--download-data", action="store_true", default=True, help="Download FashionMNIST if missing")
+    #parser.add_argument("--no-download-data", action="store_false", dest="download_data", help="Do not download FashionMNIST")
+    #parser.add_argument("--train-size", type=int, default=4000, help="Size of train subset from FashionMNIST    train split")
     parser.add_argument("--data-aug", action="store_true", help="Use data augmentation (random cropping)")
-    parser.add_argument("--save", type=str, default="./exp_mp_mnist", help="Directory for logs and outputs")
+    parser.add_argument("--save", type=str, default="./exp_mp_fashion_mnist", help="Directory for logs and outputs")
     parser.add_argument("--gpu", type=int, default=0, help="GPU device ID")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
@@ -96,8 +96,8 @@ def parse_args() -> argparse.Namespace:
 
 @dataclass
 class FDEConfig:
-    beta: float = 0.5
-    T: float = 20.0
+    beta: float = 0.3
+    T: float = 1.0
     step_size: float = 0.1
     method: str = "predictor-f"
     memory: int = -1
@@ -213,7 +213,7 @@ class Flatten(nn.Module):
 # Data Loading
 # =============================================================================
 
-def get_mnist_loaders(data_aug=False, batch_size=128, test_batch_size=1000, perc=1.0):
+def get_fashion_mnist_loaders(data_aug=False, batch_size=128, test_batch_size=1000, perc=1.0):
     if data_aug:
         transform_train = transforms.Compose([
             transforms.RandomCrop(28, padding=4),
@@ -229,17 +229,17 @@ def get_mnist_loaders(data_aug=False, batch_size=128, test_batch_size=1000, perc
     ])
 
     train_loader = DataLoader(
-        MNIST(root='data/mnist', train=True, download=True, transform=transform_train), batch_size=batch_size,
+        FashionMNIST(root='data/fashion_mnist', train=True, download=True, transform=transform_train), batch_size=batch_size,
         shuffle=True, num_workers=2, drop_last=True
     )
 
     train_eval_loader = DataLoader(
-        MNIST(root='data/mnist', train=True, download=True, transform=transform_test),
+        FashionMNIST(root='data/fashion_mnist', train=True, download=True, transform=transform_test),
         batch_size=test_batch_size, shuffle=False, num_workers=2, drop_last=True
     )
 
     test_loader = DataLoader(
-        MNIST(root='data/mnist', train=False, download=True, transform=transform_test),
+        FashionMNIST(root='data/fashion_mnist', train=False, download=True, transform=transform_test),
         batch_size=test_batch_size, shuffle=False, num_workers=2, drop_last=True
     )
 
@@ -522,7 +522,7 @@ if __name__ == "__main__":
 
     criterion = nn.CrossEntropyLoss().to(device)
 
-    train_loader, test_loader, train_eval_loader = get_mnist_loaders(
+    train_loader, test_loader, train_eval_loader = get_fashion_mnist_loaders(
         args.data_aug, args.batch_size, args.test_batch_size
     )
 

@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=mp-fde-mnist
-#SBATCH --output=slurm_logs/mp_fde_mnist_%j.out
-#SBATCH --error=slurm_logs/mp_fde_mnist_%j.err
+#SBATCH --job-name=mp-fde-fashion-mnist
+#SBATCH --output=slurm_logs/mp_fde_fashion_mnist_%j.out
+#SBATCH --error=slurm_logs/mp_fde_fashion_mnist_%j.err
 #SBATCH --partition=work1
 #SBATCH --time=48:00:00
 #SBATCH --nodes=1
@@ -24,7 +24,7 @@ cd "$project_root"
 ENV_NAME="${ENV_NAME:-torch28}"
 MODE="${MODE:-direct}"   # direct | adjoint | adjoint-mixed | adjoint-mixed-bfloat
 EPOCHS="${EPOCHS:-160}"
-SAVE_ROOT="${SAVE_ROOT:-exp_mp_mnist}"
+SAVE_ROOT="${SAVE_ROOT:-exp_mp_fashion_mnist}"
 
 ADJOINT_METHOD="${ADJOINT_METHOD:-predictor-f}"
 DIRECT_METHOD="${DIRECT_METHOD:-predictor}"
@@ -38,8 +38,8 @@ TEST_BATCH_SIZE="${TEST_BATCH_SIZE:-128}"
 LR="${LR:-0.1}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-5e-4}"
 SEED="${SEED:-25}"
-BETA="${BETA:-0.5}"
-T_FINAL="${T_FINAL:-20.0}"
+BETA="${BETA:-0.3}"
+T_FINAL="${T_FINAL:-1.0}"
 STEP_SIZE="${STEP_SIZE:-0.1}"
 MEMORY="${MEMORY:--1}"
 DATA_AUG="${DATA_AUG:-0}"
@@ -54,18 +54,18 @@ if [ -d "${CUDNN_PATH}" ]; then
 fi
 
 # Resolve driver path from either repo root submit or torchfde root submit.
-driver_script="torchfde/examples/MNIST/mp_fde_mnist.py"
+driver_script="torchfde/examples/FashionMNIST/mp_fde_fashion_mnist.py"
 pythonpath_root="$project_root/torchfde"
 if [ ! -f "$driver_script" ]; then
-  driver_script="examples/MNIST/mp_fde_mnist.py"
+  driver_script="examples/FashionMNIST/mp_fde_fashion_mnist.py"
   pythonpath_root="$project_root"
 fi
 
 if [ ! -f "$driver_script" ]; then
-  echo "ERROR: Could not find mp_fde_mnist.py from submit dir: $project_root"
+  echo "ERROR: Could not find mp_fde_fashion_mnist.py from submit dir: $project_root"
   echo "Expected either:"
-  echo "  - torchfde/examples/MNIST/mp_fde_mnist.py"
-  echo "  - examples/MNIST/mp_fde_mnist.py"
+  echo "  - torchfde/examples/FashionMNIST/mp_fde_fashion_mnist.py"
+  echo "  - examples/FashionMNIST/mp_fde_fashion_mnist.py"
   exit 1
 fi
 

@@ -692,7 +692,7 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
                     y_weight_term = _mul_inplace(y_convolution_sum, gamma_beta)
                     y = _add(y0, y_weight_term)
 
-                # Update parameter gradients - already using in-place operation, good!
+                # Update parameter gradients 
                 if adj_params and vjp_params:
                     for ap, vp in zip(adj_params, vjp_params):
                         ap.add_(vp, alpha=h)
