@@ -531,6 +531,18 @@ def weighted_sum_fused(b_vals, hist):
     view_shape = (b_vals.shape[0],) + (1,) * (hist.ndim - 1)
     return (b_vals.view(view_shape) * hist).sum(dim=0)
 
+def weighted_sum_state(b_vals, hist):
+    if _is_tuple(hist):
+        return tuple(weighted_sum_fused(b_vals, h_i) for h_i in hist)
+    return weighted_sum_fused(b_vals, hist)
+
+
+def history_slice(history_buf: _StateHistoryBuffer, start_idx: int, end_idx: int):
+    if history_buf.is_tuple:
+        return tuple(buf[start_idx:end_idx] for buf in history_buf._buffers)
+    return history_buf._buffers[start_idx:end_idx]
+
+
 def forward_predictor(func, y0, beta, tspan, **options):
     """Use one-step Adams-Bashforth (Euler) method to integrate Caputo equation
         D^beta y(t) = f(t,y)
@@ -561,7 +573,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
             device = y0.device
         dtype_low = options.get('mp_dtype', dtype_hi)
 
-        fhistory = torch.zeros(N, *y0[0].shape, dtype=dtype_low, device=device)
+        fhistory = _StateHistoryBuffer(y0, N, dtype_low)
         
         yn = _clone(y0)
         yhistory = _StateHistoryBuffer(yn, N, dtype_low)
@@ -573,7 +585,7 @@ def forward_predictor(func, y0, beta, tspan, **options):
             
             with torch.autocast(device_type='cuda', dtype=dtype_low):
                 f_k = func(tn, yn)
-                fhistory[k] = f_k[0]
+                fhistory.set(k, f_k)
             
             yhistory.set(k, yn)
 
@@ -586,19 +598,19 @@ def forward_predictor(func, y0, beta, tspan, **options):
             with torch.autocast(device_type='cuda', enabled=False):
                 start_idx = max(0, k + 1 - memory_length)
 
-                j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
-
-                hist = fhistory[start_idx : k + 1, ...]
-
-                b_vals = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)).reshape(-1, *([1] * (hist.ndim - 1)))
+                j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device)
+                hist = history_slice(fhistory, start_idx, k + 1)
+                b_vals = h_beta_over_beta * (
+                    torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)
+                )
                 
           
                 #print(f'bvals now has shape {b_vals.shape}, and hist has size {hist.shape}, fhistory has size {fhistory.shape}')
-                convolution_sum = (b_vals * hist).sum(dim=0)
+                convolution_sum = weighted_sum_state(b_vals, hist)
                 
                 # Final update step
                 weight_term = _mul_inplace(convolution_sum, gamma_beta)
-                yn = (y0[0] + weight_term.squeeze(0),)
+                yn = _add(y0, weight_term)
 
         yn = _cast_state_dtype(yn, dtype_low)
         yhistory.set(N - 1, yn)
@@ -625,7 +637,7 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
         dtype_hi = options.get("dtype_hi")
         dtype_low = options.get('mp_dtype')
 
-        fadj_history = torch.zeros(N, *y0[0].shape, dtype=dtype_low, device=device)
+        fadj_history = _StateHistoryBuffer(adj_y0, N, dtype_low)
         if yhistory is None:  # CHANGED: Fixed condition (was "if True:")
             fy_history = []
       
@@ -645,7 +657,7 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
 
             with torch.autocast(device_type='cuda', dtype=dtype_low):
                 func_eval, vjp_y, vjp_params = func(tn, (y, adj_y, adj_params))
-                fadj_history[k] = vjp_y[0]
+                fadj_history.set(k, vjp_y)
 
             if yhistory is None:
                 fy_history.append(func_eval)
@@ -654,30 +666,31 @@ def backward_predictor(func, y_aug, beta, tspan, yhistory, **options):
             with torch.autocast(device_type='cuda', enabled=False):
                 start_idx = max(0, k + 1 - memory_length)
                 # CHANGED: j_vals now starts from start_idx instead of 0
-                j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device).unsqueeze(1)
-
-                hist = fadj_history[start_idx : k + 1, ...]
+                j_vals = torch.arange(start_idx, k + 1, dtype=dtype_hi, device=device)
+                hist = history_slice(fadj_history, start_idx, k + 1)
 
                 # CHANGED: Use torch.pow and pre-computed h_beta_over_beta
-                b_vals = h_beta_over_beta * (torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)).reshape(-1, *([1] * (hist.ndim - 1)))
+                b_vals = h_beta_over_beta * (
+                    torch.pow(k + 1 - j_vals, beta) - torch.pow(k - j_vals, beta)
+                )
                 
-                convolution_sum = (b_vals * hist).sum(dim=0)
+                convolution_sum = weighted_sum_state(b_vals, hist)
         
                 # Final update step
                 # CHANGED: Use in-place multiplication
                 weight_term = _mul_inplace(convolution_sum, gamma_beta)
-                adj_y = (adj_y0[0] + weight_term.squeeze(0),)
+                adj_y = _add(adj_y0, weight_term)
 
                 # Handle y update
                 if yhistory is not None and k < N - 1:
                     y = _cast_state_like(yhistory[k + 1], y)
                 elif yhistory is None:
-                    hist = fadj_history[start_idx : k + 1, :, :]
-                    y_convolution_sum = (b_vals[:, None, None] * hist).sum(dim=0)
+                    hist = tuple(torch.stack([f_i[idx] for f_i in fy_history[start_idx:k + 1]], dim=0) for idx in range(len(fy_history[0])))
+                    y_convolution_sum = weighted_sum_state(b_vals, hist)
                     
                     # CHANGED: Use in-place multiplication
                     y_weight_term = _mul_inplace(y_convolution_sum, gamma_beta)
-                    y = (y0[0] + y_weight_term.squeeze(0),)
+                    y = _add(y0, y_weight_term)
 
                 # Update parameter gradients - already using in-place operation, good!
                 if adj_params and vjp_params:
