@@ -51,10 +51,8 @@ Test Accuracy Plot (every epoch):
 ## Fashion MNIST Final Time, T, Sweep Comparisions
 
 We use the same network architecture and fractional dynamics as above, but now we sweep the final time $T$ across a range of values. Specifically, we take 
-
 ```math
 T \in \{1, 2, 4, 8, 16, 32, 64, 128\}
 ```
-
 and report peak GPU memory for each epoch and time per epoch for training. 
 
