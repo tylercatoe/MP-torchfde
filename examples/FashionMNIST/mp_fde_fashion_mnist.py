@@ -91,6 +91,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save", type=str, default="./exp_mp_fashion_mnist", help="Directory for logs and outputs")
     parser.add_argument("--gpu", type=int, default=0, help="GPU device ID")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--benchmark_only", action="store_true", help="Skip accuracy/inference and emit per-epoch benchmark metrics")
 
     return parser.parse_args()
 
@@ -544,34 +545,44 @@ if __name__ == "__main__":
         torch.cuda.synchronize(device)
 
     logger.info(f"Starting training for {args.nepochs} epochs...")
-    with torch.no_grad():
-        model.eval()
-        if mode_cfg.mp_dtype is not None:
-            with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
+    if args.benchmark_only:
+        logger.info("Benchmark-only mode: skipping initial accuracy evaluation.")
+        print("Benchmark-only mode: skipping initial accuracy evaluation.")
+    else:
+        with torch.no_grad():
+            model.eval()
+            if mode_cfg.mp_dtype is not None:
+                with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
+                    init_train_acc = accuracy(model, train_eval_loader)
+                    init_val_acc = accuracy(model, test_loader)
+            else:
                 init_train_acc = accuracy(model, train_eval_loader)
                 init_val_acc = accuracy(model, test_loader)
-        else:
-            init_train_acc = accuracy(model, train_eval_loader)
-            init_val_acc = accuracy(model, test_loader)
-        init_lr = optimizer.param_groups[0]["lr"]
-        logger.info(
-            f"Initial | "
-            f"LR {init_lr:.4e} | "
-            f"Train Acc {init_train_acc:.4f} | "
-            f"Val Acc {init_val_acc:.4f}"
-        )
-        print(
-            f"Initial | "
-            f"LR {init_lr:.4e} | "
-            f"Train Acc {init_train_acc:.4f} | "
-            f"Val Acc {init_val_acc:.4f}"
-        )
-        model.train()
+            init_lr = optimizer.param_groups[0]["lr"]
+            logger.info(
+                f"Initial | "
+                f"LR {init_lr:.4e} | "
+                f"Train Acc {init_train_acc:.4f} | "
+                f"Val Acc {init_val_acc:.4f}"
+            )
+            print(
+                f"Initial | "
+                f"LR {init_lr:.4e} | "
+                f"Train Acc {init_train_acc:.4f} | "
+                f"Val Acc {init_val_acc:.4f}"
+            )
+            model.train()
 
     end = time.time()
     train_start = time.time()
+    last_epoch_time_s = 0.0
+    last_epoch_peak_mem_mb = 0.0
+    epoch_peak_mem_mb = 0.0
 
     for iter in range(args.nepochs * batches_per_epoch):
+        if iter % batches_per_epoch == 0:
+            epoch_peak_mem_mb = 0.0
+
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr_fn(iter)
         
@@ -606,47 +617,84 @@ if __name__ == "__main__":
             torch.cuda.synchronize(device)
             peak_memory = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
             train_step_peak_mem_mb = max(train_step_peak_mem_mb, peak_memory)
+            epoch_peak_mem_mb = max(epoch_peak_mem_mb, peak_memory)
         
         if (iter + 1) % batches_per_epoch == 0:
-            
-            with torch.no_grad():
-                model.eval()
-                epoch = (iter + 1) // batches_per_epoch
-                if device.type == "cuda":
-                    torch.cuda.synchronize(device)
-                epoch_time_meter.update(time.time() - end)
-                if mode_cfg.mp_dtype is not None:
-                    with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
-                        train_acc = accuracy(model, train_eval_loader)
-                        val_acc = accuracy(model, test_loader)
-                else:
-                    train_acc = accuracy(model, train_eval_loader)
-                    val_acc = accuracy(model, test_loader)
-                if val_acc > best_acc:
-                    torch.save({'state_dict': model.state_dict(), 'args': args}, os.path.join(args.save, 'model.pth'))
-                    best_acc = val_acc
-                lr = optimizer.param_groups[0]["lr"]
+            epoch = (iter + 1) // batches_per_epoch
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            epoch_time_meter.update(time.time() - end)
+            epoch_time_s = epoch_time_meter.val
+            epoch_peak_mb = epoch_peak_mem_mb if device.type == "cuda" else 0.0
+            last_epoch_time_s = epoch_time_s
+            last_epoch_peak_mem_mb = epoch_peak_mb
+            lr = optimizer.param_groups[0]["lr"]
+
+            if args.benchmark_only:
                 logger.info(
                     f"Epoch {epoch:03d} | "
-                    f"Time {epoch_time_meter.val:.2f}s | "
-                    f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
-                    f"LR {lr:.4e} | "
-                    f"Train Acc {train_acc:.4f} | "
-                    f"Val Acc {val_acc:.4f} | "
-                    f"Best {best_acc:.4f}"
+                    f"Time {epoch_time_s:.2f}s | "
+                    f"Peak Mem {epoch_peak_mb:.2f} MB | "
+                    f"LR {lr:.4e}"
                 )
                 print(
                     f"Epoch {epoch:03d} | "
-                    f"Time {epoch_time_meter.val:.2f}s | "
-                    f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
-                    f"LR {lr:.4e} | "
-                    f"Train Acc {train_acc:.4f} | "
-                    f"Val Acc {val_acc:.4f} | "
-                    f"Best {best_acc:.4f}"
+                    f"Time {epoch_time_s:.2f}s | "
+                    f"Peak Mem {epoch_peak_mb:.2f} MB | "
+                    f"LR {lr:.4e}"
                 )
-                model.train()
+            else:
+                with torch.no_grad():
+                    model.eval()
+                    if mode_cfg.mp_dtype is not None:
+                        with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
+                            train_acc = accuracy(model, train_eval_loader)
+                            val_acc = accuracy(model, test_loader)
+                    else:
+                        train_acc = accuracy(model, train_eval_loader)
+                        val_acc = accuracy(model, test_loader)
+                    if val_acc > best_acc:
+                        torch.save({'state_dict': model.state_dict(), 'args': args}, os.path.join(args.save, 'model.pth'))
+                        best_acc = val_acc
+                    logger.info(
+                        f"Epoch {epoch:03d} | "
+                        f"Time {epoch_time_s:.2f}s | "
+                        f"Peak Mem {epoch_peak_mb:.2f} MB | "
+                        f"LR {lr:.4e} | "
+                        f"Train Acc {train_acc:.4f} | "
+                        f"Val Acc {val_acc:.4f} | "
+                        f"Best {best_acc:.4f}"
+                    )
+                    print(
+                        f"Epoch {epoch:03d} | "
+                        f"Time {epoch_time_s:.2f}s | "
+                        f"Peak Mem {epoch_peak_mb:.2f} MB | "
+                        f"LR {lr:.4e} | "
+                        f"Train Acc {train_acc:.4f} | "
+                        f"Val Acc {val_acc:.4f} | "
+                        f"Best {best_acc:.4f}"
+                    )
+                    model.train()
+
+            bench_line = (
+                f"BENCHMARK|epoch={epoch}|time_s={epoch_time_s:.6f}|peak_mem_mb={epoch_peak_mb:.6f}|"
+                f"mode={mode_cfg.name}|T={args.T}"
+            )
+            logger.info(bench_line)
+            print(bench_line)
             end = time.time()
     
+    if args.benchmark_only:
+        logger.info(
+            f"BENCHMARK_LAST|epoch={args.nepochs}|time_s={last_epoch_time_s:.6f}|"
+            f"peak_mem_mb={last_epoch_peak_mem_mb:.6f}|mode={mode_cfg.name}|T={args.T}"
+        )
+        print(
+            f"BENCHMARK_LAST|epoch={args.nepochs}|time_s={last_epoch_time_s:.6f}|"
+            f"peak_mem_mb={last_epoch_peak_mem_mb:.6f}|mode={mode_cfg.name}|T={args.T}"
+        )
+        raise SystemExit(0)
+
     model.eval()
     if device.type == "cuda":
         torch.cuda.synchronize(device)

@@ -43,6 +43,7 @@ T_FINAL="${T_FINAL:-1.0}"
 STEP_SIZE="${STEP_SIZE:-0.1}"
 MEMORY="${MEMORY:--1}"
 DATA_AUG="${DATA_AUG:-0}"
+BENCHMARK_ONLY="${BENCHMARK_ONLY:-0}"
 
 ENV_PATH="${HOME}/.conda/envs/${ENV_NAME}"
 if [ -d "${ENV_PATH}/lib" ]; then
@@ -83,6 +84,11 @@ if [ "$DATA_AUG" = "1" ]; then
   data_aug_arg="--data-aug"
 fi
 
+benchmark_only_arg=""
+if [ "$BENCHMARK_ONLY" = "1" ]; then
+  benchmark_only_arg="--benchmark_only"
+fi
+
 export PYTHONPATH="$pythonpath_root:${PYTHONPATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
@@ -114,4 +120,5 @@ conda run -n "$ENV_NAME" python -u "$driver_script" \
   --width "$WIDTH" \
   --seed "$SEED" \
   --gpu 0 \
+  $benchmark_only_arg \
   $data_aug_arg
