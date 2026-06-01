@@ -33,6 +33,7 @@ Experiment Parameters:
     - Batch Size: 128
     - Initial LR: 0.1, decay at specified boundary epochs 
     - Momentum: 0.9
+    - Weight decay: 5e-4
     - GPU: NVIDIA H200 (Palmetto)
 
 Note: 
