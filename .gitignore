@@ -7,6 +7,9 @@
 # 数据集/大文件
 data/
 datasets/
+torchfde/
+results/
+
 exp*/
 *.zip
 *.tar.gz
@@ -61,5 +64,3 @@ temp/
 # 系统文件
 .DS_Store
 Thumbs.db
-
-
