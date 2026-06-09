@@ -22,7 +22,7 @@ Experiment Parameters:
     - GPU: NVIDIA H200 (Palmetto)
 
 
-First, for $T=2$, we have memory savings of $44.5\%$ with similar performance.
+First, for $T=2$, we have memory savings of $44.5%$ with similar performance.
 ```text
 ======================================================================
   Neural FDE MNIST: torchfde FP32 vs rampde FP16
@@ -44,7 +44,7 @@ First, for $T=2$, we have memory savings of $44.5\%$ with similar performance.
 
 
 
-Now, for a deeper network with $T=20$, we have memory savings of $81.4/%$ again with very similar performance results. 
+Now, for a deeper network with $T=20$, we have memory savings of $81.4%$ again with very similar performance results. 
 ```text
 ======================================================================
   Neural FDE MNIST: torchfde FP32 vs rampde FP16
@@ -87,7 +87,7 @@ Experiment Parameters:
     - Weight Decay: 5e-4
     - GPU: NVIDIA H200 (Palmetto)
 
-With this configuration, we have $79.8\%$ memory savings with similar performance. 
+With this configuration, we have $79.8%$ memory savings with similar performance. 
 ```text
 ======================================================================
   Neural FDE STL10: torchfde FP32 vs rampde FP16
@@ -114,12 +114,12 @@ Fractional Lotka-Volterra parameter estimation: torchfde FP32 vs rampde FP16.
 Replicates Section 5.1 of "Efficient Training of Neural FDE via Adjoint Backpropagation" (Kang et al., AAAI 2025, arXiv:2503.16666).
 
 True system:  
-$$
-\begin{align*}
+```math
+\begin{aligned}
     D^\beta x &= x(a - cy) \\
     D^\beta y &= -y(b - dx)
-\end{align*}
-$$
+\end{aligned}
+```
 True params:  $[a, b, c, d] = [1.0, 0.5, 1.0, 0.3]$
 $\beta = 0.7$ (we use 0.7 instead of their unspecified value).
 
@@ -146,7 +146,7 @@ Experiment Parameters:
     - Initial Parameters: $[a,b,c,d] = [0.49, 0.24, 0.52, 0.15]$
 
 
-With this configuration, we have an $80.5\%$ savings in memory with similar best/final parameter error (MSE). 
+With this configuration, we have an $80.5%$ savings in memory with similar best/final parameter error (MSE). 
 ```text
 ======================================================================
   Neural FDE Lotka-Volterra: torchfde FP32 vs rampde FP16
