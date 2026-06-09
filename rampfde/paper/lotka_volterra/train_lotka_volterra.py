@@ -105,7 +105,7 @@ class FractionalLVFunc(nn.Module):
     def __init__(self, init: torch.Tensor = None):
         super().__init__()
         if init is None:
-            init = torch.tensor([0.99, 0.48, 1.05, 0.33])  # near true values
+            init = torch.tensor([0.49, 0.24, 0.52, 0.15])  # half true values
         self.log_params = nn.Parameter(torch.log(init.clamp(min=1e-3)))
 
     @property

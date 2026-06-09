@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Compare results from torchfde FP32 vs rampde FP16 runs.
+Compare results from torchfde FP32 vs rampde FP16 Lotka-Volterra experiment.
 
 Usage:
     python compare_results.py results/torchfde_fp32/results.json results/rampde_fp16/results.json
@@ -16,40 +16,41 @@ def load(path: str) -> dict:
 
 
 def summarize(data: dict) -> dict:
-    epochs = data["epochs"]
-    best_acc = max(e["test_acc"] for e in epochs)
-    last_acc = epochs[-1]["test_acc"]
-    avg_mem = sum(e["peak_mem_mb"] for e in epochs) / len(epochs)
-    peak_mem = max(e["peak_mem_mb"] for e in epochs)
+    its = data["iterations"]
+    best_loss = min(e["param_err"] for e in its)
+    last_loss = its[-1]["param_err"]
+    avg_mem = sum(e["peak_mem_mb"] for e in its) / len(its)
+    peak_mem = max(e["peak_mem_mb"] for e in its)
     return {
         "solver": data["solver"],
-        "beta": data["beta"], "T": data["T"], "step_size": data["step_size"],
-        "n_params": data["n_params"],
-        "n_epochs": len(epochs),
-        "best_acc": best_acc, "last_acc": last_acc,
+        "beta": data["beta"], "T": data["T"], #"step_size": data["step_size"],
+        #"n_params": data["n_params"],
+        "n_its": len(its),
+        "best_loss": best_loss, "last_loss": last_loss,
         "avg_peak_mem_mb": avg_mem, "max_peak_mem_mb": peak_mem,
     }
 
 def plot_acc(data1: dict, data2: dict):
     import matplotlib.pyplot as plt
 
-    epochs1 = data1["epochs"]
+    its1 = data1["iterations"]
     beta = data1["beta"]
     T = data1["T"]
-    step = data1["step_size"]
-    acc1 = [e["test_acc"] for e in epochs1]
-    epochs2 = data2["epochs"]
-    acc2 = [e["test_acc"] for e in epochs2]
-    plt.plot(acc1, marker="o", label="torchfde FP32")
-    plt.plot(acc2, marker="s", label="rampde FP16")
-    plt.title(f"MNIST Test Accuracy over Epochs (β={data1['beta']}, T={data1['T']}, step={data1['step_size']})")
-    plt.xlabel("Epoch")
-    plt.ylabel("Test Accuracy (%)")
-    plt.xlim(0, max(len(acc1), len(acc2)) - 1)
-    plt.ylim(0, 1.0)
+    #step = data1["step_size"]
+    loss1 = [e["param_err"] for e in its1]
+    its2 = data2["iterations"]
+    its = [e['iter'] for e in its2]
+    loss2 = [e["param_err"] for e in its2]
+    plt.plot(its, loss1, marker="o", label="torchfde FP32")
+    plt.plot(its, loss2, marker="s", label="rampde FP16")
+    plt.title(f"Lotka-Volterra Parameter Error over Iterations (β={data1['beta']})")#, T={data1['T']}, step={data1['step_size']})")
+    plt.xlabel("Iteration")
+    plt.ylabel("Parameter Error")
+    plt.xlim(0, 500)
+    plt.yscale("log")
     plt.grid()
     plt.legend()
-    plt.savefig(f"test_accuracy_plot_b{beta}_T{T}_h{step}.png")
+    plt.savefig(f"test_accuracy_plot_b{beta}_T{T}.png")#_h{step}.png")
     plt.show()
 
 
@@ -63,12 +64,13 @@ def main():
     fp32 = summarize(fp32_raw)
     fp16 = summarize(fp16_raw)
 
+
     print("\n" + "=" * 70)
-    print("  Neural FDE MNIST: torchfde FP32 vs rampde FP16")
+    print("  Neural FDE Lotka-Volterra: torchfde FP32 vs rampde FP16")
     print("=" * 70)
-    print(f"  β={fp32['beta']}  T={fp32['T']}  h={fp32['step_size']}  "
-          f"N={int(fp32['T'] / fp32['step_size']) + 1}  "
-          f"params={fp32['n_params']:,}  epochs={fp32['n_epochs']}")
+    print(f"  β={fp32['beta']}  T={fp32['T']}  "#h={fp32['step_size']}  "
+          f"T={fp32['T']}) " #f"N={int(fp32['T'] / fp32['step_size']) + 1}  "
+          f"iterations={(fp32['n_its']-1) * 50}") #params={fp32['n_params']:,}  iterations={fp32['n_its']}")
     print()
 
     w = 22
@@ -83,8 +85,8 @@ def main():
         print(f"  {label:<{w}} {v32:>14{fmt}}  {v16:>12{fmt}}  "
               f"{sign}{delta:>9.2f}{dsym}")
 
-    row("Best test acc",    "best_acc",        "best_acc")
-    row("Final test acc",   "last_acc",         "last_acc")
+    row("Best parameter error",    "best_loss",        "best_loss")
+    row("Final parameter error",   "last_loss",         "last_loss")
     row("Avg peak mem (MB)", "avg_peak_mem_mb", "avg_peak_mem_mb", fmt=".1f")
     row("Max peak mem (MB)", "max_peak_mem_mb", "max_peak_mem_mb", fmt=".1f")
 

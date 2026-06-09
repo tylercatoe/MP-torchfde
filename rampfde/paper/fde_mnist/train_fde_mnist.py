@@ -224,7 +224,7 @@ def evaluate(model: nn.Module, loader: DataLoader,
         correct += (logits.argmax(dim=1) == y).sum().item()
         total += y.size(0)
     model.train()
-    return correct / total, total_loss / total
+    return correct / total#, total_loss / total
 
 
 def lr_schedule(step: int, batches_per_epoch: int, initial_lr: float,
@@ -298,7 +298,7 @@ def train(args):
 
             torch.cuda.synchronize(device)
             t0 = time.perf_counter()
-            acc = test_acc(model, test_loader, device)
+            acc = evaluate(model, test_loader, device)#test_acc(model, test_loader, device)
             torch.cuda.synchronize(device)
             eval_time = time.perf_counter() - t0
 

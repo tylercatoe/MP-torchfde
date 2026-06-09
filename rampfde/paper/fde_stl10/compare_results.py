@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Compare results from torchfde FP32 vs rampde FP16 runs.
+Compare results from torchfde FP32 vs rampde FP16 STL10 experiment.
 
 Usage:
     python compare_results.py results/torchfde_fp32/results.json results/rampde_fp16/results.json
@@ -42,7 +42,7 @@ def plot_acc(data1: dict, data2: dict):
     acc2 = [e["test_acc"] for e in epochs2]
     plt.plot(acc1, marker="o", label="torchfde FP32")
     plt.plot(acc2, marker="s", label="rampde FP16")
-    plt.title(f"MNIST Test Accuracy over Epochs (β={data1['beta']}, T={data1['T']}, step={data1['step_size']})")
+    plt.title(f"STL10 Test Accuracy over Epochs (β={data1['beta']}, T={data1['T']}, step={data1['step_size']})")
     plt.xlabel("Epoch")
     plt.ylabel("Test Accuracy (%)")
     plt.xlim(0, max(len(acc1), len(acc2)) - 1)
@@ -64,7 +64,7 @@ def main():
     fp16 = summarize(fp16_raw)
 
     print("\n" + "=" * 70)
-    print("  Neural FDE MNIST: torchfde FP32 vs rampde FP16")
+    print("  Neural FDE STL10: torchfde FP32 vs rampde FP16")
     print("=" * 70)
     print(f"  β={fp32['beta']}  T={fp32['T']}  h={fp32['step_size']}  "
           f"N={int(fp32['T'] / fp32['step_size']) + 1}  "
