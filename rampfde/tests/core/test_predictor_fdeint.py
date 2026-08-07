@@ -297,7 +297,12 @@ class TestPredictorFDEintWeightBoundedness(unittest.TestCase):
 
     def test_row_sum_matches_closed_form(self):
         beta = 0.6
-        h = torch.tensor(0.037)
+        # float64 throughout so this test isolates the weight-formula identity
+        # itself; predictor_fdeint() always builds tspan (and hence h) as
+        # float32 regardless of y0's dtype (mirroring fdeint.py's convention),
+        # so the *solver's* h carries float32-level precision by design — not
+        # what this test is checking.
+        h = torch.tensor(0.037, dtype=torch.float64)
         C = float(torch.pow(h, beta).item()) / math.gamma(beta + 1.0)
 
         for n in [1, 5, 20, 137, 500]:
