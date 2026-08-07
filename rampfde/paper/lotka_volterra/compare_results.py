@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Compare results from two or more FDE MNIST solver runs
+Compare results from two or more fractional Lotka-Volterra solver runs
 (torchfde FP32 / rampde L1 FP16 / rampde predictor FP16).
 
 Usage:
@@ -18,17 +18,21 @@ def load(path: str) -> dict:
 
 
 def summarize(data: dict) -> dict:
-    epochs = data["epochs"]
-    best_acc = max(e["test_acc"] for e in epochs)
-    last_acc = epochs[-1]["test_acc"]
-    avg_mem = sum(e["peak_mem_mb"] for e in epochs) / len(epochs)
-    peak_mem = max(e["peak_mem_mb"] for e in epochs)
+    iters = data["iterations"]
+    final = iters[-1]
+    best_err = min(r["param_err"] for r in iters)
+    avg_mem = sum(r["peak_mem_mb"] for r in iters) / len(iters)
+    peak_mem = max(r["peak_mem_mb"] for r in iters)
     return {
         "solver": data["solver"],
-        "beta": data["beta"], "T": data["T"], "step_size": data["step_size"],
-        "n_params": data["n_params"],
-        "n_epochs": len(epochs),
-        "best_acc": best_acc, "last_acc": last_acc,
+        "beta": data["beta"], "T": data["T"],
+        "true_params": data["true_params"],
+        "n_records": len(iters),
+        "final_iter": final["iter"],
+        "final_loss": final["loss"],
+        "final_param_err": final["param_err"],
+        "best_param_err": best_err,
+        "final_params": final["params"],
         "avg_peak_mem_mb": avg_mem, "max_peak_mem_mb": peak_mem,
     }
 
@@ -42,14 +46,13 @@ def main():
     reference = runs[0]
 
     print("\n" + "=" * 88)
-    print("  Neural FDE MNIST — solver comparison")
+    print("  Fractional Lotka-Volterra parameter estimation — solver comparison")
     print("=" * 88)
-    print(f"  β={reference['beta']}  T={reference['T']}  h={reference['step_size']}  "
-          f"N={int(reference['T'] / reference['step_size']) + 1}  "
-          f"params={reference['n_params']:,}  epochs={reference['n_epochs']}")
+    print(f"  β={reference['beta']}  T={reference['T']}  "
+          f"true_params={reference['true_params']}  iters={reference['final_iter']}")
     print()
 
-    label_w = 22
+    label_w = 24
     col_w = 16
     header = f"  {'Metric':<{label_w}}" + "".join(
         f"{r['solver']:>{col_w}}" for r in runs
@@ -57,22 +60,29 @@ def main():
     print(header)
     print("  " + "-" * (label_w + col_w * len(runs)))
 
-    def row(label, key, fmt=".4f"):
+    def row(label, key, fmt=".6f"):
         cells = "".join(f"{r[key]:>{col_w}{fmt}}" for r in runs)
         print(f"  {label:<{label_w}}{cells}")
 
-    row("Best test acc", "best_acc")
-    row("Final test acc", "last_acc")
+    row("Final loss", "final_loss")
+    row("Final param err", "final_param_err")
+    row("Best param err", "best_param_err")
     row("Avg peak mem (MB)", "avg_peak_mem_mb", fmt=".1f")
     row("Max peak mem (MB)", "max_peak_mem_mb", fmt=".1f")
 
+    print()
+    for r in runs:
+        print(f"  {r['solver']:<{label_w}}final params = "
+              f"{['%.4f' % p for p in r['final_params']]}")
+
+    # Relative comparisons against the first run (typically torchfde_fp32)
     if len(runs) > 1:
         print(f"\n  Relative to {reference['solver']!r}:")
         for r in runs[1:]:
             mem_saving = 100.0 * (reference["max_peak_mem_mb"] - r["max_peak_mem_mb"]) / reference["max_peak_mem_mb"]
-            acc_delta = r["best_acc"] - reference["best_acc"]
+            err_delta = 100.0 * (r["final_param_err"] - reference["final_param_err"]) / (reference["final_param_err"] + 1e-12)
             print(f"    {r['solver']:<24} memory {'saving' if mem_saving >= 0 else 'increase'}: "
-                  f"{abs(mem_saving):5.1f}%   best-acc delta: {acc_delta:+.4f}")
+                  f"{abs(mem_saving):5.1f}%   param err change: {err_delta:+6.1f}%")
 
     print("=" * 88 + "\n")
 

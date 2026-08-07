@@ -53,6 +53,13 @@ result_dir.txt
 
 # Downloaded datasets
 otflowlarge/data/
+fde_mnist/data/
+fde_stl10/data/
+
+# FDE experiment results (regenerated from run scripts; not paper/*/raw_data/-shaped)
+lotka_volterra/results/
+fde_mnist/results/
+fde_stl10/results/
 
 # Optional: Comment out if you want to track generated outputs
 */outputs/

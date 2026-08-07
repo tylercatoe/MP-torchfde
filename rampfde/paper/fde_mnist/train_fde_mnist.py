@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """
-Neural FDE MNIST experiment: torchfde FP32 vs rampde FP16.
+Neural FDE MNIST experiment: torchfde FP32 vs rampde L1 FP16 vs rampde
+predictor (Volterra product-rectangle / "basic predictor") FP16.
 
 Mirrors the rampde paper's ODE benchmark methodology but for the FDE case.
 Trains a CNN + FDE-block classifier on MNIST and reports:
@@ -12,8 +13,12 @@ Usage:
     # FP32 baseline (torchfde)
     python train_fde_mnist.py --solver torchfde_fp32 --nepochs 30
 
-    # FP16 mixed-precision (rampde)
+    # FP16 mixed-precision, Gao L1 scheme (rampde.fdeint)
     python train_fde_mnist.py --solver rampde_fp16 --nepochs 30
+
+    # FP16 mixed-precision, Volterra product-rectangle scheme with exact
+    # discrete adjoint (rampde.predictor_fdeint)
+    python train_fde_mnist.py --solver rampde_predictor_fp16 --nepochs 30
 
     # Quick 3-epoch smoke test
     python train_fde_mnist.py --solver rampde_fp16 --nepochs 3 --batch_size 64
@@ -57,6 +62,12 @@ try:
     RAMPDE_OK = True
 except ImportError:
     RAMPDE_OK = False
+
+try:
+    from rampde import predictor_fdeint as _rampde_predictor_fdeint
+    RAMPDE_PREDICTOR_OK = True
+except ImportError:
+    RAMPDE_PREDICTOR_OK = False
 
 
 # ---------------------------------------------------------------------------
@@ -141,20 +152,51 @@ class FDEBlockRampde(nn.Module):
         return out.float()
 
 
+class FDEBlockRampdePredictor(nn.Module):
+    """FDE block using rampde.predictor_fdeint (Volterra product-rectangle
+    "basic predictor" scheme, FP16 autocast + adj_dtype=float16, exact
+    discrete-adjoint backward)."""
+
+    def __init__(self, func: nn.Module, beta: float, T: float, step_size: float):
+        super().__init__()
+        self.func = func
+        self.beta = beta
+        self.T = T
+        self.step_size = step_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            out = _rampde_predictor_fdeint(
+                self.func, x, self.beta, self.T, self.step_size,
+                loss_scaler=False, adj_dtype=torch.float16,
+            )
+        return out.float()
+
+
 class Flatten(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x.view(x.size(0), -1)
 
 
+_FDE_BLOCKS = {
+    "torchfde_fp32":        FDEBlockTorchfde,
+    "rampde_fp16":           FDEBlockRampde,
+    "rampde_predictor_fp16": FDEBlockRampdePredictor,
+}
+
+_SOLVER_AVAILABILITY = {
+    "torchfde_fp32":        lambda: TORCHFDE_OK,
+    "rampde_fp16":           lambda: RAMPDE_OK,
+    "rampde_predictor_fp16": lambda: RAMPDE_PREDICTOR_OK,
+}
+
+
 def build_model(solver: str, dim: int, beta: float, T: float,
                 step_size: float) -> nn.Module:
     func = ODEFunc(dim)
-    if solver == "torchfde_fp32":
-        fde_block = FDEBlockTorchfde(func, beta, T, step_size)
-    elif solver == "rampde_fp16":
-        fde_block = FDEBlockRampde(func, beta, T, step_size)
-    else:
+    if solver not in _FDE_BLOCKS:
         raise ValueError(f"Unknown solver: {solver!r}")
+    fde_block = _FDE_BLOCKS[solver](func, beta, T, step_size)
 
     return nn.Sequential(
         # Downsampling: 28×28 → 6×6 feature maps
@@ -248,10 +290,13 @@ def train(args):
     print(f"Device: {device}  |  Solver: {args.solver}  |  β={args.beta}  "
           f"T={args.T}  h={args.step_size}  N={int(args.T / args.step_size) + 1}")
 
-    if args.solver == "torchfde_fp32" and not TORCHFDE_OK:
-        raise RuntimeError("torchfde not found; check _TORCHFDE_DIR path")
-    if args.solver == "rampde_fp16" and not RAMPDE_OK:
-        raise RuntimeError("rampde not found; check _RAMPDE_DIR path")
+    if args.solver not in _SOLVER_AVAILABILITY:
+        raise ValueError(f"Unknown solver: {args.solver!r}")
+    if not _SOLVER_AVAILABILITY[args.solver]():
+        raise RuntimeError(
+            f"Solver {args.solver!r} requested but its package could not be "
+            f"imported; check _RAMPDE_DIR / _TORCHFDE_DIR paths"
+        )
 
     torch.manual_seed(args.seed)
     model = build_model(args.solver, args.dim, args.beta, args.T,
@@ -298,7 +343,7 @@ def train(args):
 
             torch.cuda.synchronize(device)
             t0 = time.perf_counter()
-            acc = test_acc(model, test_loader, device)
+            acc, _ = evaluate(model, test_loader, device)
             torch.cuda.synchronize(device)
             eval_time = time.perf_counter() - t0
 
@@ -339,7 +384,7 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--solver", type=str, default="rampde_fp16",
-                   choices=["torchfde_fp32", "rampde_fp16"],
+                   choices=["torchfde_fp32", "rampde_fp16", "rampde_predictor_fp16"],
                    help="Solver to use")
     p.add_argument("--beta", type=float, default=0.7,
                    help="Fractional order β ∈ (0,1)")

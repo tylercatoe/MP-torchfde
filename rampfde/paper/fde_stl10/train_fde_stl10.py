@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """
-Neural FDE STL-10 experiment: torchfde FP32 vs rampde FP16.
+Neural FDE STL-10 experiment: torchfde FP32 vs rampde L1 FP16 vs rampde
+predictor (Volterra product-rectangle / "basic predictor") FP16.
 
 Architecture mirrors the rampde paper STL-10 (Table 4):
   - Images upscaled to 128×128 for tensor core alignment
@@ -12,10 +13,14 @@ Architecture mirrors the rampde paper STL-10 (Table 4):
 The key memory comparison:
   - torchfde FP32: stores ALL N×3_block intermediate activations in autograd graph
   - rampde FP16:  custom adjoint recomputes one step at a time; stores only yt+adj_buf
+  - rampde predictor FP16: same memory profile as rampde FP16, but with an
+    EXACT discrete-adjoint backward (rampde.predictor_fdeint) instead of the
+    L1 scheme's continuous-adjoint approximation.
 
 Usage:
-    python train_fde_stl10.py --solver torchfde_fp32 --nepochs 30
-    python train_fde_stl10.py --solver rampde_fp16   --nepochs 30
+    python train_fde_stl10.py --solver torchfde_fp32        --nepochs 30
+    python train_fde_stl10.py --solver rampde_fp16           --nepochs 30
+    python train_fde_stl10.py --solver rampde_predictor_fp16 --nepochs 30
 """
 
 import argparse
@@ -52,6 +57,14 @@ try:
     RAMPDE_OK = True
 except ImportError:
     RAMPDE_OK = False
+
+_rampde_predictor_fdeint = None
+
+try:
+    from rampde import predictor_fdeint as _rampde_predictor_fdeint  # type: ignore[assignment]
+    RAMPDE_PREDICTOR_OK = True
+except ImportError:
+    RAMPDE_PREDICTOR_OK = False
 
 
 # ---------------------------------------------------------------------------
@@ -122,17 +135,49 @@ class FDEBlockRampde(nn.Module):
         return out.float()
 
 
+class FDEBlockRampdePredictor(nn.Module):
+    """FDE block: rampde.predictor_fdeint (Volterra product-rectangle "basic
+    predictor" scheme, FP16 autocast + adj_dtype=float16, exact
+    discrete-adjoint backward)."""
+    def __init__(self, func: nn.Module, beta: float, T: float, step_size: float):
+        super().__init__()
+        self.func = func
+        self.beta = beta
+        self.T = T
+        self.step_size = step_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            out = _rampde_predictor_fdeint(
+                self.func, x, self.beta, self.T, self.step_size,
+                loss_scaler=False, adj_dtype=torch.float16)
+        return out.float()
+
+
 class Flatten(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x.view(x.size(0), -1)
 
 
+_FDE_BLOCKS = {
+    "torchfde_fp32":        FDEBlockTorchfde,
+    "rampde_fp16":           FDEBlockRampde,
+    "rampde_predictor_fp16": FDEBlockRampdePredictor,
+}
+
+_SOLVER_AVAILABILITY = {
+    "torchfde_fp32":        lambda: TORCHFDE_OK,
+    "rampde_fp16":           lambda: RAMPDE_OK,
+    "rampde_predictor_fp16": lambda: RAMPDE_PREDICTOR_OK,
+}
+
+
 def _make_fde_block(solver: str, dim: int, beta: float,
                     T: float, step_size: float) -> nn.Module:
     func = ODEFunc(dim)
-    if solver == "torchfde_fp32":
-        return FDEBlockTorchfde(func, beta, T, step_size)
-    return FDEBlockRampde(func, beta, T, step_size)
+    if solver not in _FDE_BLOCKS:
+        raise ValueError(f"Unknown solver: {solver!r}")
+    return _FDE_BLOCKS[solver](func, beta, T, step_size)
 
 
 def build_model(solver: str, ch: int, beta: float,
@@ -240,10 +285,11 @@ def train(args):
     print(f"Device: {device}  |  Solver: {args.solver}  |  "
           f"β={args.beta}  T={args.T}  h={args.step_size}  N={N}  ch={args.ch}")
 
-    if args.solver == "torchfde_fp32" and not TORCHFDE_OK:
-        raise RuntimeError("torchfde not found")
-    if args.solver == "rampde_fp16" and not RAMPDE_OK:
-        raise RuntimeError("rampde not found")
+    if args.solver not in _SOLVER_AVAILABILITY:
+        raise ValueError(f"Unknown solver: {args.solver!r}")
+    if not _SOLVER_AVAILABILITY[args.solver]():
+        raise RuntimeError(f"Solver {args.solver!r} requested but its package "
+                           f"could not be imported")
 
     torch.manual_seed(args.seed)
     model = build_model(args.solver, args.ch, args.beta,
@@ -334,7 +380,7 @@ def train(args):
 def parse_args():
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--solver",    type=str,   default="rampde_fp16",
-                   choices=["torchfde_fp32", "rampde_fp16"])
+                   choices=["torchfde_fp32", "rampde_fp16", "rampde_predictor_fp16"])
     p.add_argument("--beta",      type=float, default=0.7)
     p.add_argument("--T",         type=float, default=1.0,
                    help="Integration end time per FDE block")

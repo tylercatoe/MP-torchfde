@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """
-Fractional Lotka-Volterra parameter estimation: torchfde FP32 vs rampde FP16.
+Fractional Lotka-Volterra parameter estimation: torchfde FP32 vs rampde L1 FP16
+vs rampde predictor (Volterra product-rectangle / "basic predictor") FP16.
 
 Replicates Section 5.1 of "Efficient Training of Neural FDE via Adjoint
-Backpropagation" (Kang et al., AAAI 2025, arXiv:2503.16666).
+Backpropagation" (Kang et al., AAAI 2025, arXiv:2503.16666) — the same paper
+that names the "basic predictor" scheme implemented in rampde.predictor_fdeint.
 
 True system:  D^β x = x(a - cy)
               D^β y = -y(b - dx)
@@ -11,14 +13,23 @@ True params:  [a, b, c, d] = [1.0, 0.5, 1.0, 0.3]
 β = 0.7 (we use 0.7 instead of their unspecified value)
 
 Task: Given noisy trajectory data, learn [a, b, c, d] by fitting the FDE.
-Both solvers see identical data and optimizer. We compare:
+All solvers see identical data and optimizer. We compare:
   - Final parameter error vs ground truth
   - Peak GPU memory used during training
   - Training loss convergence
 
+Solvers:
+  torchfde_fp32       reference: torchfde L1 scheme, float32, standard autograd
+  rampde_fp16         rampde.fdeint — Gao L1 scheme, mixed precision,
+                       continuous-adjoint backward approximation
+  rampde_predictor_fp16   rampde.predictor_fdeint — Volterra product-rectangle
+                       ("basic predictor") scheme, mixed precision,
+                       EXACT discrete-adjoint backward
+
 Usage:
     python train_lotka_volterra.py --solver torchfde_fp32
     python train_lotka_volterra.py --solver rampde_fp16
+    python train_lotka_volterra.py --solver rampde_predictor_fp16
 """
 
 import argparse
@@ -48,6 +59,12 @@ try:
     RAMPDE_OK = True
 except ImportError:
     RAMPDE_OK = False
+
+try:
+    from rampde import predictor_fdeint as _rampde_predictor_fdeint
+    RAMPDE_PREDICTOR_OK = True
+except ImportError:
+    RAMPDE_PREDICTOR_OK = False
 
 
 # ---------------------------------------------------------------------------
@@ -127,11 +144,39 @@ def solve_rampde(func, y0, beta):
     return out.float()
 
 
+def solve_rampde_predictor(func, y0, beta):
+    with torch.autocast(device_type="cuda", dtype=torch.float16):
+        out = _rampde_predictor_fdeint(func, y0, beta, T_END, STEP_SIZE,
+                                       loss_scaler=False, adj_dtype=torch.float16)
+    return out.float()
+
+
+SOLVERS = {
+    "torchfde_fp32":        solve_torchfde,
+    "rampde_fp16":           solve_rampde,
+    "rampde_predictor_fp16": solve_rampde_predictor,
+}
+
+SOLVER_AVAILABILITY = {
+    "torchfde_fp32":        lambda: TORCHFDE_OK,
+    "rampde_fp16":           lambda: RAMPDE_OK,
+    "rampde_predictor_fp16": lambda: RAMPDE_PREDICTOR_OK,
+}
+
+
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
 def train(args):
+    if args.solver not in SOLVERS:
+        raise ValueError(f"Unknown solver: {args.solver!r}")
+    if not SOLVER_AVAILABILITY[args.solver]():
+        raise ImportError(
+            f"Solver {args.solver!r} requested but its package could not be imported. "
+            f"Check that torchfde / rampde are installed and on sys.path."
+        )
+
     os.makedirs(args.save, exist_ok=True)
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}  |  Solver: {args.solver}  |  β={BETA_TRUE}  T={T_END}")
@@ -148,7 +193,7 @@ def train(args):
     func = FractionalLVFunc().to(device)
     beta = BETA_TRUE  # scalar — rampde fdeint accepts float beta
 
-    solve_fn = solve_torchfde if args.solver == "torchfde_fp32" else solve_rampde
+    solve_fn = SOLVERS[args.solver]
 
     optimizer = torch.optim.Adam(func.parameters(), lr=args.lr)
     criterion = nn.MSELoss()
@@ -208,7 +253,7 @@ def train(args):
 def parse_args():
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--solver",    type=str,   default="rampde_fp16",
-                   choices=["torchfde_fp32", "rampde_fp16"])
+                   choices=["torchfde_fp32", "rampde_fp16", "rampde_predictor_fp16"])
     p.add_argument("--n_traj",    type=int,   default=50,
                    help="Number of trajectories in training set")
     p.add_argument("--noise_std", type=float, default=0.05)
