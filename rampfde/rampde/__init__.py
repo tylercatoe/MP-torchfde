@@ -20,7 +20,12 @@ Solvers:
     FixedGridODESolverUnscaled: Optimal performance variant (default for float32, bfloat16)
     FixedGridODESolverDynamic: Dynamic scaling variant (default for float16)
     FixedGridODESolverUnscaledSafe: Exception handling variant (use this for float16 in combination with GradScaler)
-    
+
+FDE solvers:
+    fdeint: L1 scheme for Caputo FDEs (continuous-adjoint backward approximation)
+    predictor_fdeint: Volterra product-rectangle / "basic predictor" scheme for
+        Caputo FDEs, with an EXACT discrete-adjoint backward (see predictor_fdeint.py)
+
 Mixed precision:
     DynamicScaler: Dynamic loss scaling for mixed precision training
 """
@@ -39,6 +44,12 @@ from .fdeint import (
     FDEFixedGridSolverDynamic,
     FDEFixedGridSolverUnscaledSafe,
 )
+from .predictor_fdeint import (
+    predictor_fdeint,
+    PredictorFDESolverUnscaled,
+    PredictorFDESolverDynamic,
+    PredictorFDESolverUnscaledSafe,
+)
 
 __all__ = [
     "__version__",
@@ -48,4 +59,6 @@ __all__ = [
     "DynamicScaler", "_is_any_infinite",
     "fdeint",
     "FDEFixedGridSolverUnscaled", "FDEFixedGridSolverDynamic", "FDEFixedGridSolverUnscaledSafe",
+    "predictor_fdeint",
+    "PredictorFDESolverUnscaled", "PredictorFDESolverDynamic", "PredictorFDESolverUnscaledSafe",
 ]
