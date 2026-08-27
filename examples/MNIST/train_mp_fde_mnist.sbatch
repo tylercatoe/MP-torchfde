@@ -53,19 +53,12 @@ if [ -d "${CUDNN_PATH}" ]; then
   export LD_LIBRARY_PATH="${CUDNN_PATH}:${LD_LIBRARY_PATH}"
 fi
 
-# Resolve driver path from either repo root submit or torchfde root submit.
-driver_script="torchfde/examples/MNIST/mp_fde_mnist.py"
-pythonpath_root="$project_root/torchfde"
-if [ ! -f "$driver_script" ]; then
-  driver_script="examples/MNIST/mp_fde_mnist.py"
-  pythonpath_root="$project_root"
-fi
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+driver_script="$script_dir/mp_fde_mnist.py"
+pythonpath_root="/home/tcatoe/home_FDNN/MP-torchfde/rampfde"
 
 if [ ! -f "$driver_script" ]; then
-  echo "ERROR: Could not find mp_fde_mnist.py from submit dir: $project_root"
-  echo "Expected either:"
-  echo "  - torchfde/examples/MNIST/mp_fde_mnist.py"
-  echo "  - examples/MNIST/mp_fde_mnist.py"
+  echo "ERROR: Could not find mp_fde_mnist.py: $driver_script"
   exit 1
 fi
 
