@@ -17,7 +17,7 @@ module load anaconda3/2023.09-0
 # shellcheck disable=SC1091
 eval "$(conda shell.bash hook)"
 
-project_root="${SLURM_SUBMIT_DIR:-$PWD}"
+project_root="/home/tcatoe/home_FDNN/MP-torchfde/examples/MNIST"
 mkdir -p "$project_root/slurm_logs"
 cd "$project_root"
 
@@ -53,14 +53,14 @@ if [ -d "${CUDNN_PATH}" ]; then
   export LD_LIBRARY_PATH="${CUDNN_PATH}:${LD_LIBRARY_PATH}"
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-driver_script="$script_dir/mp_fde_mnist.py"
+driver_script="/home/tcatoe/home_FDNN/MP-torchfde/examples/MNIST/mp_fde_mnist.py"
 pythonpath_root="/home/tcatoe/home_FDNN/MP-torchfde/rampfde"
 
 if [ ! -f "$driver_script" ]; then
   echo "ERROR: Could not find mp_fde_mnist.py: $driver_script"
   exit 1
 fi
+
 
 case "$MODE" in
   direct|adjoint|adjoint-mixed|adjoint-mixed-bfloat)
