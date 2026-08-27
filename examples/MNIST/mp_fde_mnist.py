@@ -126,6 +126,8 @@ def dtype_from_name(name: str) -> torch.dtype:
         return torch.bfloat16
     elif name == "float32":
         return torch.float32
+    elif name == None:
+        return torch.float32
     raise ValueError(f"Unsupported dtype: {name}")
 
 # =============================================================================
