@@ -76,7 +76,7 @@ if [ "$DATA_AUG" = "1" ]; then
   data_aug_arg="--data-aug"
 fi
 
-export PYTHONPATH="$pythonpath_root:${PYTHONPATH:-}"
+export PYTHONPATH="/home/tcatoe/home_FDNN/MP-torchfde:/home/tcatoe/home_FDNN/MP-torchfde/rampfde:${PYTHONPATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "Job ID: $SLURM_JOB_ID"
