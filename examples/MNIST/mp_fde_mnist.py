@@ -405,7 +405,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
 def build_solver(mode_config: ModeConfig):
     if mode_config.use_adjoint:
         if mode_config.mp_dtype is not None:
-            from rampfde/rampfde import predictor_fdeint
+            from rampde import predictor_fdeint
             def solver(func, y0, beta, t, step_size, method, options=None):
                 return predictor_fdeint(
                     func, 
