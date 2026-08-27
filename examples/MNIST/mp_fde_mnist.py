@@ -418,7 +418,7 @@ def build_solver(mode_config: ModeConfig):
                     loss_scaler=mode_config.loss_scaler,
                     adj_dtype=mode_config.mp_dtype
                 )
-                return solver
+            return solver
         else: 
             from torchfde import fdeint_adjoint
             def solver(func, y0, beta, t, step_size, method, options=None):
