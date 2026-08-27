@@ -404,20 +404,33 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
     
 def build_solver(mode_config: ModeConfig):
     if mode_config.use_adjoint:
-        from torchfde import fdeint_adjoint
-
-        def solver(func, y0, beta, t, step_size, method, options=None):
-            return fdeint_adjoint(
-                func,
-                y0,
-                beta=beta,
-                t=t,
-                step_size=step_size,
-                method=method,
-                options=options,
-                loss_scaler=mode_config.loss_scaler,
-            )
-        return solver
+        if mode_config.mp_dtype is not None:
+            from rampfde/rampfde import predictor_fdeint
+            def solver(func, y0, beta, t, step_size, method, options=None):
+                return predictor_fdeint(
+                    func, 
+                    y0,
+                    beta=beta,
+                    t=t,
+                    step_size=step_size,
+                    loss_scaler=mode_config.loss_scaler,
+                    adj_dtype=mode_config.mp_dtype
+                )
+                return solver
+        else 
+            from torchfde import fdeint_adjoint
+            def solver(func, y0, beta, t, step_size, method, options=None):
+                return fdeint_adjoint(
+                    func,
+                    y0,
+                    beta=beta,
+                    t=t,
+                    step_size=step_size,
+                    method=method,
+                    options=options,
+                    loss_scaler=mode_config.loss_scaler,
+                )
+            return solver
 
     from torchfde import fdeint
 
