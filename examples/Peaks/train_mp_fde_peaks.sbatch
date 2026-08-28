@@ -17,7 +17,7 @@ module load "$CUDA_MODULE"
 module load anaconda3/2023.09-0
 # shellcheck disable=SC1091
 eval "$(conda shell.bash hook)"
-project_root="${SLURM_SUBMIT_DIR:-$PWD}"
+project_root="/home/tcatoe/home_FDNN/MP-torchfde/examples/Peaks"
 mkdir -p "$project_root/slurm_logs"
 cd "$project_root"
 
@@ -44,17 +44,14 @@ T_FINAL="${T_FINAL:-2.0}"
 STEP_SIZE="${STEP_SIZE:-0.1}"
 MEMORY="${MEMORY:--1}"
 
-driver_script="torchfde/examples/Peaks/mp_fde_peaks.py"
-pythonpath_root="$project_root/torchfde"
-if [ ! -f "$driver_script" ]; then
-  driver_script="examples/Peaks/mp_fde_peaks.py"
-  pythonpath_root="$project_root"
-fi
+driver_script="/home/tcatoe/home_FDNN/MP-torchfde/examples/Peaks/mp_fde_peaks.py"
+pythonpath_root="/home/tcatoe/home_FDNN/MP-torchfde/rampfde"
 
 if [ ! -f "$driver_script" ]; then
-  echo "ERROR: Could not find mp_fde_peaks.py from submit dir: $project_root"
+  echo "ERROR: Could not find mp_fde_peaks.py: $driver_script"
   exit 1
 fi
+
 
 case "$MODE" in
   direct|adjoint|adjoint-mixed|adjoint-mixed-bfloat)
