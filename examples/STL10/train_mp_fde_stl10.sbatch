@@ -17,7 +17,7 @@ module load anaconda3/2023.09-0
 # shellcheck disable=SC1091
 eval "$(conda shell.bash hook)"
 
-project_root="${SLURM_SUBMIT_DIR:-$PWD}"
+project_root="/home/tcatoe/home_FDNN/MP-torchfde/examples/STL10"
 mkdir -p "$project_root/slurm_logs"
 cd "$project_root"
 
@@ -53,19 +53,11 @@ if [ -d "${CUDNN_PATH}" ]; then
   export LD_LIBRARY_PATH="${CUDNN_PATH}:${LD_LIBRARY_PATH}"
 fi
 
-# Resolve driver path from either repo root submit or torchfde root submit.
-driver_script="torchfde/examples/STL10/mp_fde_stl10.py"
-pythonpath_root="$project_root/torchfde"
-if [ ! -f "$driver_script" ]; then
-  driver_script="examples/STL10/mp_fde_stl10.py"
-  pythonpath_root="$project_root"
-fi
+driver_script="/home/tcatoe/home_FDNN/MP-torchfde/examples/STL10/mp_fde_stl10.py"
+pythonpath_root="/home/tcatoe/home_FDNN/MP-torchfde/rampfde"
 
 if [ ! -f "$driver_script" ]; then
-  echo "ERROR: Could not find mp_fde_stl10.py from submit dir: $project_root"
-  echo "Expected either:"
-  echo "  - torchfde/examples/STL10/mp_fde_stl10.py"
-  echo "  - examples/STL10/mp_fde_stl10.py"
+  echo "ERROR: Could not find mp_fde_stl10.py: $driver_script"
   exit 1
 fi
 
