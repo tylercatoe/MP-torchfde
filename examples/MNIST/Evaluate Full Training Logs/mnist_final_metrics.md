@@ -1,15 +1,17 @@
-# Fashion MNIST Final Metrics Summary
+# MNIST Final Metrics Summary
 
 ## Full Training Metrics 
 
 ```text
-mode                 | final_val_err | best_val_err | train_mem_mb | train_time_s | infer_time_s | infer_mem_mb
----------------------+---------------+--------------+--------------+--------------+--------------+-------------
-adjoint              | 0.0068        | 0.0056       | 804.87       | 23349.84     | 5.3700       | 7816.83     
-adjoint-mixed        | 0.0059        | 0.0054       | 590.98       | 54908.84     | 6.1100       | 4370.12     
-adjoint-mixed-bfloat | 0.0066        | 0.0052       | 590.70       | 27176.37     | 6.1800       | 4370.12     
-direct               | 0.0069        | 0.0049       | 1955.68      | 72185.53     | 26.6000      | 3608.08     
+mode                 | final_train_acc | final_val_err | best_val_err | train_mem_mb | train_time_s | infer_time_s | infer_mem_mb
+---------------------+-----------------+---------------+--------------+--------------+--------------+--------------+-------------
+adjoint              | 0.9999          | 0.0060        | 0.0046       | 804.87       | 23706.09     | 5.3900       | 6694.79     
+adjoint-mixed        | 0.9999          | 0.0068        | 0.0057       | 373.70       | 52243.52     | 13.370       | 548.54      
+adjoint-mixed-bfloat | 0.9998          | 0.0060        | 0.0057       | 373.70       | 49214.27     | 13.280       | 548.54      
+direct               | 0.9998          | 0.0071        | 0.0063       | 1955.68      | 71926.16     | 26.230       | 3608.08     
 ```
+
+Memory savings: $80.9\%$ between direct and adjoint MP (adjoint MP uses less)
 
 Log files:
 - adjoint: adj_full_logs.txt
