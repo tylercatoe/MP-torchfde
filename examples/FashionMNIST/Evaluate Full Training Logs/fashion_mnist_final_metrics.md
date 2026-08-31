@@ -11,6 +11,8 @@ adjoint-mixed-bfloat | 0.9996          | 0.0836        | 0.0766       | 159.95  
 direct               | 0.9996          | 0.0778        | 0.071        | 221.06       | 1204.35      | 0.6400       | 352.59      
 ```
 
+Memory savings: $27.6\\%$ between direct back propagation and adjoint MP (adjoint MP has lower memory)
+
 Log files:
 - adjoint: adj_full_logs.txt
 - adjoint-mixed: adj_fl16_full_logs.txt
