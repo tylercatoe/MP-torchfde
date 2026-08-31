@@ -11,7 +11,8 @@ adjoint-mixed-bfloat | 0.9996          | 0.0836        | 0.0766       | 159.95  
 direct               | 0.9996          | 0.0778        | 0.071        | 221.06       | 1204.35      | 0.6400       | 352.59      
 ```
 
-Memory savings: $27.6\\%$ between direct back propagation and adjoint MP (adjoint MP has lower memory)
+Memory savings: $27.6\\%$ between direct back propagation and adjoint MP (adjoint MP has lower memory). 
+See below for details on how memory savings change as T increases (and hence model depth increases). 
 
 Log files:
 - adjoint: adj_full_logs.txt
