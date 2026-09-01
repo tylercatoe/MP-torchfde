@@ -457,25 +457,28 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
 
     reset_peak_memory(device)
     train_step_peak_mem_mb = 0.0
+    epoch_peak_mem_mb = 0.0
     if device.type == 'cuda':
         torch.cuda.synchronize(device)
     epoch_start_time = time.perf_counter()
     train_start = time.perf_counter()
 
     for iteration in range(args.nepochs): 
-        if device.type == 'cuda':
-            torch.cuda.reset_peak_memory_stats(device)
+        epoch_peak_mem_mb = 0.0
 
         perm = torch.randperm(train_size)
         xy_epoch = train_data[perm]
         z_epoch = train_targets[perm]
 
         for start in range(0, train_size, args.batch_size):
+
+            optimizer.zero_grad(set_to_none=True)
             end = min(start + args.batch_size, train_size)
             xy_batch = xy_epoch[start:end].to(device, non_blocking=True)
             z_batch = z_epoch[start:end].to(device, non_blocking=True)
 
-            optimizer.zero_grad(set_to_none=True)
+            if device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(device)
             
             if mode_config.autocast_dtype is not None:
                 #print('Using Autocast')
@@ -489,13 +492,20 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
 
             loss.backward()
             optimizer.step()
+
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+                peak_memory = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
+                train_step_peak_mem_mb = max(train_step_peak_mem_mb, peak_memory)
+                epoch_peak_mem_mb = max(epoch_peak_mem_mb, peak_memory)
         scheduler.step()
 
         if device.type == 'cuda':
             torch.cuda.synchronize(device)
         train_end = time.perf_counter()
         if device.type == 'cuda':
-            train_step_peak_mem_mb = max(train_step_peak_mem_mb, get_peak_memory_usage(device))
+            peak_memory = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
+            train_step_peak_mem_mb = max(train_step_peak_mem_mb, peak_memory)
         
         epoch_time = train_end - epoch_start_time
         if mode_config.autocast_dtype is not None:
@@ -514,7 +524,7 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
         logger.info(
             f'Epoch {iteration:03d} | '
             f'Time {epoch_time:.2f}s | '
-            f'Peak Mem {train_step_peak_mem_mb:.2f} MB | '
+            f'Peak Mem {epoch_peak_mem_mb:.2f} MB | '
             f'LR {lr:.4e} | '
             f'Train MSE {train_mse:.6f} | '
             f'Test MSE {test_mse:.6f} | '
@@ -523,7 +533,7 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
         print(
             f'Epoch {iteration:03d} | '
             f'Time {epoch_time:.2f}s | '
-            f'Peak Mem {train_step_peak_mem_mb:.2f} MB | '
+            f'Peak Mem {epoch_peak_mem_mb:.2f} MB | '
             f'LR {lr:.4e} | '
             f'Train MSE {train_mse:.4f} | '
             f'Test MSE {test_mse:.4f} | '
@@ -549,17 +559,18 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
     train_time_s = time.perf_counter() - train_start
     train_step_peak_mem_mb = train_step_peak_mem_mb if device.type == 'cuda' else 0.0
 
-    if mode_config.autocast_dtype is not None:
-        with torch.autocast(device_type=device.type, dtype=mode_config.autocast_dtype):
+    with torch.no_grad():
+        if mode_config.autocast_dtype is not None:
+            with torch.autocast(device_type=device.type, dtype=mode_config.autocast_dtype):
+                inf_time, inf_mem, _ = measure_inference(model, device, 500)
+        else:
             inf_time, inf_mem, _ = measure_inference(model, device, 500)
-    else:
-        inf_time, inf_mem, _ = measure_inference(model, device, 500)
 
     logger.info(
         f'Final Results | '
         f'Final Test MSE {last_test_mse:.6f} | '
         f'Best Test MSE {best_test_mse:.6f} | '
-        f'Train Memory {train_step_peak_mem_mb:.2f} MB | '
+        f'Max Train Mem {train_step_peak_mem_mb:.2f} MB | '
         f'Train Time {train_time_s:.2f} s | '
         f'Inference Time {inf_time:.4f}s | '
         f'Inference Peak Mem {inf_mem:.2f} MB | '
