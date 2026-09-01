@@ -656,7 +656,8 @@ def measure_inference(model: nn.Module, val_loader: DataLoader, device: torch.de
         torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - start
     if device.type == "cuda":
-        peak_mb = torch.cuda.max_memory_allocated(device)
+        peak_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
+
     else: 
         peak_mb = 0.0
     #peak_mb = get_peak_memory_mb(device)
@@ -730,6 +731,7 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
 
     #reset_peak_memory(device)
     train_step_peak_mem_mb = 0.0
+    epoch_peak_mem_mb = 0.0
     if device.type == "cuda":
         torch.cuda.synchronize(device)
 
@@ -737,6 +739,9 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
     train_start = time.perf_counter()
 
     for iteration in range(args.nepochs * batches_per_epoch):
+        if iteration % batches_per_epoch == 0:
+            epoch_peak_mem_mb = 0.0
+        
         optimizer.zero_grad(set_to_none=True)
         x, y = next(data_gen)
         x = x.to(device, non_blocking=True)
@@ -767,6 +772,7 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
             torch.cuda.synchronize(device)
             peak_memory = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
             train_step_peak_mem_mb = max(train_step_peak_mem_mb, peak_memory)
+            epoch_peak_mem_mb = max(epoch_peak_mem_mb, peak_memory)
 
         
 
@@ -794,7 +800,7 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
             logger.info(
                 f"Epoch {epoch:03d} | "
                 f"Time {epoch_time:.2f}s | "
-                f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
+                f"Peak Mem {epoch_peak_mem_mb:.2f} MB | "
                 f"LR {lr:.4e} | "
                 f"Train Acc {train_acc:.4f} | "
                 f"Val Acc {val_acc:.4f} | "
@@ -849,9 +855,9 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
         "Final metrics | "
         f"Final Val Error {1.0 - last_val_acc:.4f} | "
         f"Best Val Error {1.0 - best_acc:.4f} | "
-        f"Train Mem {train_peak_mem_mb:.2f} MB | "
+        f"Max Train Mem {train_peak_mem_mb:.2f} MB | "
         f"Train Time {train_time_s:.2f}s | "
-        f"Infer Time {inference_time_s:.2f}s"
+        f"Infer Time {inference_time_s:.2f}s | "
         f"Infer Peak Mem {inference_peak_mem_mb:.2f} MB | "
     )
 
