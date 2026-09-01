@@ -556,7 +556,6 @@ if __name__ == "__main__":
     best_acc = 0.0
     epoch_time_meter = RunningAverageMeter()
 
-    train_step_peak_mem_mb = 0.0
     if device.type == "cuda":
         torch.cuda.synchronize(device)
 
@@ -594,6 +593,7 @@ if __name__ == "__main__":
     last_epoch_time_s = 0.0
     last_epoch_peak_mem_mb = 0.0
     epoch_peak_mem_mb = 0.0
+    train_step_peak_mem_mb = 0.0
 
     for iter in range(args.nepochs * batches_per_epoch):
         if iter % batches_per_epoch == 0:
@@ -717,19 +717,20 @@ if __name__ == "__main__":
     train_time_s = time.time() - train_start
     train_peak_mem_mb = train_step_peak_mem_mb if device.type == "cuda" else 0.0
 
-    if mode_cfg.mp_dtype is not None: 
-        with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype): 
+    with torch.no_grad():
+        if mode_cfg.mp_dtype is not None: 
+            with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype): 
+                inference_time_s, inference_peak_mem_mb, acc = measure_inference(
+                    model,
+                    test_loader,
+                    device,
+                )
+        else:
             inference_time_s, inference_peak_mem_mb, acc = measure_inference(
                 model,
                 test_loader,
                 device,
             )
-    else:
-        inference_time_s, inference_peak_mem_mb, acc = measure_inference(
-            model,
-            test_loader,
-            device,
-        )
 
     logger.info(f"Training complete. Best validation accuracy: {best_acc:.4f}")
     logger.info(
