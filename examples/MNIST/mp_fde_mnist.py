@@ -554,6 +554,7 @@ if __name__ == "__main__":
     best_acc = 0.0
     epoch_time_meter = RunningAverageMeter()
 
+    epoch_peak_mem_mb = 0.0
     train_step_peak_mem_mb = 0.0
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -587,6 +588,9 @@ if __name__ == "__main__":
     train_start = time.time()
 
     for iter in range(args.nepochs * batches_per_epoch):
+        if iter % batches_per_epoch == 0:
+            epoch_peak_mem_mb = 0.0
+
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr_fn(iter)
         
@@ -621,6 +625,7 @@ if __name__ == "__main__":
             torch.cuda.synchronize(device)
             peak_memory = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # Convert to MB
             train_step_peak_mem_mb = max(train_step_peak_mem_mb, peak_memory)
+            epoch_peak_mem_mb = max(epoch_peak_mem_mb, peak_memory)
         
         if (iter + 1) % batches_per_epoch == 0:
             
@@ -630,6 +635,7 @@ if __name__ == "__main__":
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
                 epoch_time_meter.update(time.time() - end)
+                epoch_peak_mb = epoch_peak_mem_mb if device.type == "cuda" else 0.0
                 if mode_cfg.mp_dtype is not None:
                     with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
                         train_acc = accuracy(model, train_eval_loader)
@@ -644,7 +650,7 @@ if __name__ == "__main__":
                 logger.info(
                     f"Epoch {epoch:03d} | "
                     f"Time {epoch_time_meter.val:.2f}s | "
-                    f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
+                    f"Peak Mem {epoch_peak_mb:.2f} MB | "
                     f"LR {lr:.4e} | "
                     f"Train Acc {train_acc:.4f} | "
                     f"Val Acc {val_acc:.4f} | "
@@ -653,7 +659,7 @@ if __name__ == "__main__":
                 print(
                     f"Epoch {epoch:03d} | "
                     f"Time {epoch_time_meter.val:.2f}s | "
-                    f"Peak Mem {train_step_peak_mem_mb:.2f} MB | "
+                    f"Peak Mem {epoch_peak_mb:.2f} MB | "
                     f"LR {lr:.4e} | "
                     f"Train Acc {train_acc:.4f} | "
                     f"Val Acc {val_acc:.4f} | "
@@ -668,26 +674,27 @@ if __name__ == "__main__":
     train_time_s = time.time() - train_start
     train_peak_mem_mb = train_step_peak_mem_mb if device.type == "cuda" else 0.0
 
-    if mode_cfg.mp_dtype is not None: 
-        with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype): 
+    with torch.no_grad():
+        if mode_cfg.mp_dtype is not None: 
+            with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype): 
+                inference_time_s, inference_peak_mem_mb, acc = measure_inference(
+                    model,
+                    test_loader,
+                    device,
+                )
+        else:
             inference_time_s, inference_peak_mem_mb, acc = measure_inference(
                 model,
                 test_loader,
                 device,
             )
-    else:
-        inference_time_s, inference_peak_mem_mb, acc = measure_inference(
-            model,
-            test_loader,
-            device,
-        )
 
     logger.info(f"Training complete. Best validation accuracy: {best_acc:.4f}")
     logger.info(
         "Final metrics | "
         f"Final Val Error {1.0 - acc:.4f} | "
         f"Best Val Error {1.0 - best_acc:.4f} | "
-        f"Train Mem {train_peak_mem_mb:.2f} MB | "
+        f"Max Train Mem {train_peak_mem_mb:.2f} MB | "
         f"Train Time {train_time_s:.2f}s | "
         f"Infer Time {inference_time_s:.2f}s |"
         f"Infer Peak Mem {inference_peak_mem_mb:.2f} MB | "
