@@ -16,7 +16,7 @@ if [ "$run_size" = "pilot" ]; then
   save_root="${SAVE_ROOT:-exp_mp_mnist_pilot}"
   echo "Submitting PILOT jobs with epochs=$epochs"
 else
-  epochs="${FULL_EPOCHS:-160}"
+  epochs="${FULL_EPOCHS:-60}"
   save_root="${SAVE_ROOT:-exp_mp_mnist}"
   echo "Submitting FULL jobs with epochs=$epochs"
 fi
