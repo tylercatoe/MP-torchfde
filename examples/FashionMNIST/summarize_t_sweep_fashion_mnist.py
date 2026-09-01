@@ -21,6 +21,7 @@ MODE_ORDER: List[Tuple[str, str]] = [
 ]
 
 RATIO_ROWS: List[Tuple[str, str, str]] = [
+    ("dir/adj", "direct", "adjoint"),
     ("dir/adj_fl16", "direct", "adjoint-mixed"),
     ("dir/adj_bfl16", "direct", "adjoint-mixed-bfloat"),
     ("adj/adj_fl16", "adjoint", "adjoint-mixed"),
