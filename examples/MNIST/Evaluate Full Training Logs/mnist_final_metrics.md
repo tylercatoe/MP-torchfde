@@ -5,13 +5,13 @@
 ```text
 mode                 | final_train_acc | final_val_err | best_val_err | train_mem_mb | train_time_s | infer_time_s | infer_mem_mb
 ---------------------+-----------------+---------------+--------------+--------------+--------------+--------------+-------------
-adjoint              | 0.9999          | 0.0060        | 0.0046       | 804.87       | 23706.09     | 5.3900       | 6694.79     
-adjoint-mixed        | 0.9999          | 0.0068        | 0.0057       | 373.70       | 52243.52     | 13.370       | 548.54      
-adjoint-mixed-bfloat | 0.9998          | 0.0060        | 0.0057       | 373.70       | 49214.27     | 13.280       | 548.54      
-direct               | 0.9998          | 0.0071        | 0.0063       | 1955.68      | 71926.16     | 26.230       | 3608.08     
+adjoint              | 0.9999          | 0.0058        | 0.0048       | 804.87       | 10576.97     | 5.33         | 750.06   
+adjoint-mixed        | 0.9998          | 0.0063        | 0.0057       | 373.70       | 19381.30     | 12.87        | 300.65 
+adjoint-mixed-bfloat | 0.9998          | 0.0060        | 0.0057       | 373.70       | 20987.90     | 13.53        | 300.65      
+direct               | 0.9998          | 0.0063        | 0.0054       | 1955.68      | 27384.28     | 20.83        | 299.19     
 ```
 
-Memory savings: $80.9\\%$ between direct and adjoint MP (adjoint MP uses less)
+Memory savings: $80.9\%$ between direct and adjoint MP (adjoint MP uses less)
 
 Log files:
 - adjoint: adj_full_logs.txt
@@ -31,12 +31,14 @@ Experiment Parameters:
     - $f$ in $D^\beta z = f$: Convolution Module
 
 - Training Arguments:
-    - Epochs: 160 
+    - Epochs: 60 
     - Batch Size: 128
     - Initial LR: 0.1, decay at specified boundary epochs 
     - Momentum: 0.9
     - Weight decay: 5e-4
     - GPU: NVIDIA H200 (Palmetto)
+
+Parameter count: 208,266
 
 Note: 
 - adjoint mode uses adjoint method for gradients but in high precision
