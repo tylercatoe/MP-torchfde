@@ -626,8 +626,8 @@ def predictor_fdeint(
         beta_val = float(beta.item())
     else:
         beta_val = float(beta)
-    if not (0.0 < beta_val < 1.0):
-        raise ValueError(f"beta must be in (0, 1), got {beta_val}")
+    if not (0.0 < beta_val <= 1.0):
+        raise ValueError(f"beta must be in (0, 1], got {beta_val}")
 
     t_val: float
     if isinstance(t, torch.Tensor):
