@@ -23,8 +23,7 @@ fi
 
 output_root="$save_root"
 # output_root="${SAVE_ROOT:-exp_mp_stl10_beta_sweep}"
-# beta_values=(0.1 0.2 0.4 0.6 0.8 1.0)
-beta_values=(1.0)
+beta_values=(0.1 0.2 0.4 0.6 0.8 1.0)
 modes=(direct adjoint adjoint-mixed adjoint-mixed-bfloat)
 env_name="${ENV_NAME:-torch28}"
 job_ids=()
