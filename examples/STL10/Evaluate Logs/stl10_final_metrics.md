@@ -9,7 +9,7 @@ adjoint-mixed-bfloat | 0.8818          | 0.299         | 0.291        | 1207.71 
 direct               | 0.8572          | 0.311         | 0.311        | 4299.64      | 4047.21      | 1.7200       | 1130.14     
 ```
 
-Memory savings: $71.9\%$ between direct and adjoint MP (adjoint MP uses less)
+Memory savings: $71.9\\%$ between direct and adjoint MP (adjoint MP uses less)
 
 
 
