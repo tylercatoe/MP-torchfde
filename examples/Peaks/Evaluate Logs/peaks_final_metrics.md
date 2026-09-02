@@ -9,7 +9,7 @@ adjoint-mixed-bfloat | 0.000161  | 0.000144 | 293.40       | 2947.32      | 0.06
 direct               | 0.000135  | 0.000132 | 1038.70      | 5576.26      | 0.0137       | 36.20       
 ```
 
-Memory savings: $71.8\%$ between direct and adjoint MP (adjoint MP uses less)
+Memory savings: $71.8\\%$ between direct and adjoint MP (adjoint MP uses less)
 
 Log files:
 - adjoint: adj_full_training.log
