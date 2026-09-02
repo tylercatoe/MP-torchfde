@@ -3,11 +3,13 @@
 ```text
 mode                 | final_mse | best_mse | train_mem_mb | train_time_s | infer_time_s | infer_mem_mb
 ---------------------+-----------+----------+--------------+--------------+--------------+-------------
-adjoint              | 0.00011   | 0.00011  | 708.58       | 6262.00      | 0.0100       | 56.20       
-adjoint-mixed        | 0.00028   | 0.00028  | 483.23       | 4823.64      | 0.0646       | 45.82       
-adjoint-mixed-bfloat | 0.000914  | 0.000687 | 479.10       | 3432.30      | 0.0435       | 45.82       
-direct               | 0.0001    | 0.0001   | 1038.70      | 5804.10      | 0.0232       | 64.99       
+adjoint              | 2.1e-05   | 2.1e-05  | 542.15       | 5834.02      | 0.0093       | 47.43       
+adjoint-mixed        | 7.2e-05   | 7.1e-05  | 293.40       | 4311.43      | 0.0940       | 36.32       
+adjoint-mixed-bfloat | 0.000161  | 0.000144 | 293.40       | 2947.32      | 0.0618       | 36.32       
+direct               | 0.000135  | 0.000132 | 1038.70      | 5576.26      | 0.0137       | 36.20       
 ```
+
+Memory savings: $71.8\%$ between direct and adjoint MP (adjoint MP uses less)
 
 Log files:
 - adjoint: adj_full_training.log
@@ -29,9 +31,11 @@ Experiment Parameters:
     - Epochs: 5000
     - Batch size: 10,000
     - Total samples: 200,000
-    - Initial LR: 0.1
+    - Initial LR: 0.01
     - Weight decay: 5e-4
     - GPU: NVIDIA H200 (Palmetto)
+
+Parameter count: 198,401
 
 Note: 
 - adjoint mode uses adjoint method for gradients but in high precision
@@ -41,5 +45,8 @@ Note:
     
 Training Plot (every 50 epochs):
 ![Training plots for peaks full experiment](./peaks_train_mse_logscale.png "Peaks full training curves")
+
+Testing Plot (every 50 epochs):
+![Testing plots for peaks full experiment](./peaks_test_mse_logscale.png "Peaks full testing curves")
 
 
