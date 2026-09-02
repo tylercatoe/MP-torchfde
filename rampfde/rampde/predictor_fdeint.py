@@ -575,7 +575,7 @@ def predictor_fdeint(
     product-rectangle ("basic predictor") scheme.
 
     Solves:
-        D^β y(t) = func(t, y),  y(0) = y0,  β ∈ (0, 1)
+        D^β y(t) = func(t, y),  y(0) = y0,  β ∈ (0, 1]
 
     using:
         U^n = U^0 + Σ_{j=0}^{n-1} d_{n,j} f(t_j, U^j),
