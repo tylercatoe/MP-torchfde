@@ -89,22 +89,7 @@ export PYTHONPATH="$project_root/rampfde:\${PYTHONPATH:-}"
 export MPLBACKEND=Agg
 
 mkdir -p "$result_root"
-conda run -n "$env_name" python -u "$ode_script" \\
-  --odeint rampde \\
-  --method rk4 \\
-  --precision "$precision" \\
-  --no_grad_scaler \\
-  --no_dynamic_scaler \\
-  --seed "$seed" \\
-  --nepochs "$epochs" \\
-  --lr "$learning_rate" \\
-  --momentum 0.9 \\
-  --batch_size "$batch_size" \\
-  --test_batch_size "$test_batch_size" \\
-  --weight_decay "$weight_decay" \\
-  --width "$width" \\
-  --test_freq 1 \\
-  --results_dir "$result_root"
+conda run -n "$env_name" python -u "$ode_script" --odeint rampde --method rk4 --precision "$precision" --no_grad_scaler --no_dynamic_scaler --seed "$seed" --nepochs "$epochs" --lr "$learning_rate" --momentum 0.9 --batch_size "$batch_size" --test_batch_size "$test_batch_size" --weight_decay "$weight_decay" --width "$width" --test_freq 1 --results_dir "$result_root"
 EOF
     )
     echo "submitted: equation=ode precision=$precision job_id=$job_id"
@@ -178,9 +163,7 @@ module load anaconda3/2023.09-0
 eval "\$(conda shell.bash hook)"
 conda activate "$env_name"
 export MPLBACKEND=Agg
-python "$analysis_script" \\
-  --manifest "$manifest_path" \\
-  --expected-epoch "$epochs"
+python "$analysis_script" --manifest "$manifest_path" --expected-epoch "$epochs"
 EOF
 )
 
