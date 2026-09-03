@@ -569,6 +569,7 @@ def predictor_fdeint(
     *,
     loss_scaler: ScalerType = None,
     adj_dtype: Optional[torch.dtype] = None,
+    graded_time: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
     """
     Solve a Caputo fractional ODE with the mixed-precision Volterra
@@ -646,7 +647,14 @@ def predictor_fdeint(
         raise ValueError(f"step_size must be in (0, t), got {h_val}")
 
     num_steps = int(round(t_val / h_val)) + 1
-    tspan = torch.linspace(0.0, t_val, num_steps, dtype=torch.float32, device=device)
+
+    if graded_time:
+        # Graded time mesh: t_j = (j/N)^r * T, r = (1-beta)/beta, j = 0..N
+        ind = torch.arange(num_steps, dtype=torch.float32, device=device)
+        r = (1.0 - beta_val) / beta_val
+        tspan = (ind / (num_steps - 1)).pow(r) * t_val
+    else:
+        tspan = torch.linspace(0.0, t_val, num_steps, dtype=torch.float32, device=device)
 
     y0_is_tuple = _is_tuple(y0)
     if y0_is_tuple:

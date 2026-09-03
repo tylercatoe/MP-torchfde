@@ -794,6 +794,7 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
             model.train()
             best_acc = max(best_acc, val_acc)
             last_val_acc = val_acc
+            wall_time_s = time.perf_counter() - train_start
 
             lr = optimizer.param_groups[0]["lr"]
 
@@ -804,7 +805,8 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
                 f"LR {lr:.4e} | "
                 f"Train Acc {train_acc:.4f} | "
                 f"Val Acc {val_acc:.4f} | "
-                f"Best {best_acc:.4f}"
+                f"Best {best_acc:.4f} | "
+                f"Wall Time {wall_time_s:.2f}s"
             )
             # print(
             #     f"Epoch {epoch:03d} | "
@@ -977,4 +979,3 @@ if __name__ == "__main__":
     )
     #print('Data loaders obtained')
     train(args, mode_cfg, device, train_loader, val_loader, train_eval_loader)
-

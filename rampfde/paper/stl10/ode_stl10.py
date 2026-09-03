@@ -475,9 +475,10 @@ def main():
             'iter', 'epoch', 'lr',
             'running_loss', 'train_loss', 'val_loss',
             'time_fwd', 'time_bwd', 'time_fwd_sum', 'time_bwd_sum',
-            'train_acc', 'val_acc', 'max_memory_mb'
+            'train_acc', 'val_acc', 'max_memory_mb', 'wall_time_s'
         ])
 
+        wall_train_start = time.perf_counter()
         for itr in range(args.nepochs * batches_per_epoch):
             
             optimizer.zero_grad()
@@ -590,9 +591,9 @@ def main():
             train_loss_meter.update(loss.item())
             mem_meter.update(peak_memory)
 
-            # evaluate / log every test_freq steps
-            if itr % batches_per_epoch*args.test_freq == 0:
-                epoch = itr // batches_per_epoch
+            # Evaluate/log after each completed epoch (or every N epochs).
+            if (itr + 1) % (batches_per_epoch * args.test_freq) == 0:
+                epoch = (itr + 1) // batches_per_epoch
 
                 with torch.no_grad():
                     with autocast(device_type='cuda', dtype=precision):
@@ -608,13 +609,17 @@ def main():
                         "Iter {:06d} | Epoch {:04d} | LR {:.4f} | "
                         "Running Loss {:.4f} | Train Loss {:.4f} | Val Loss {:.4f} | "
                         "Fwd {:.3f}s | Bwd {:.3f}s | "
-                        "Train Acc {:.4f} | Val Acc {:.4f} | Max Mem {:.1f}MB".format(
+                        "Train Acc {:.4f} | Val Acc {:.4f} | Max Mem {:.1f}MB | "
+                        "Wall Time {:.2f}s".format(
                             itr, epoch, current_lr,
                             train_loss_meter.val, train_loss, val_loss,
                             fwd_time_meter.avg, bwd_time_meter.avg,
-                            train_acc, val_acc, mem_meter.max
+                            train_acc, val_acc, mem_meter.max,
+                            time.perf_counter() - wall_train_start
                         )
                     )
+
+                wall_time_s = time.perf_counter() - wall_train_start
 
                 # write metrics row
                 writer.writerow([
@@ -630,7 +635,8 @@ def main():
                     bwd_time_meter.sum,
                     train_acc,
                     val_acc,
-                    mem_meter.max
+                    mem_meter.max,
+                    wall_time_s
                 ])
                 mem_meter.reset()
                 csv_file.flush()
