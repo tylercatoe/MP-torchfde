@@ -150,13 +150,14 @@ def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tsp
         f_k = func(t_k, y_current)
         fhist.append(f_k)
 
-        j = torch.arange(0, k + 1, dtype=dtype, device=device)
         if graded_time: 
+            t_next = tspan[k + 1]
             w = C * (
-                torch.pow(tspan[k + 1] - tspan[j], beta_val)
-                - torch.pow(tspan[k + 1] - tspan[j + 1], beta_val)
+                torch.pow(t_next - tspan[: k + 1], beta_val)
+                - torch.pow(t_next - tspan[1: k + 2], beta_val)
             )
         else:
+            j = torch.arange(0, k + 1, dtype=dtype, device=device)
             w = C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
 
         f_stack = torch.stack(fhist)

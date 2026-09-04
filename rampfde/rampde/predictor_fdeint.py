@@ -91,7 +91,7 @@ def _predictor_weights(
     device: torch.device,
     *, 
     graded_time: bool = False,
-    tspan: Optional[torch.tensor] = None,
+    tspan: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     Compute d_{k+1,j} for j = 0..k, i.e. the weight vector applied to the
@@ -110,11 +110,19 @@ def _predictor_weights(
     No special-casing is needed at j=0 (unlike the L1 scheme): (k-j)^β = 0^β
     = 0 when j=k is well defined for β > 0.
     """
-    j = torch.arange(0, k + 1, dtype=dtype, device=device)
     if graded_time:
-        return C * (torch.pow(tspan[k+1] - tspan[j], beta_val) - torch.pow(tspan[k+1] - tspan[j + 1], beta_val))
-    else:
-        return C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
+        if tspan is None:
+            raise ValueError("tspan is required for graded-time predictor weights")
+        t_next = tspan[k + 1]
+        t_left = tspan[: k + 1]
+        t_right = tspan[1: k + 2]
+        return C * (
+            torch.pow(t_next - t_left, beta_val)
+            - torch.pow(t_next - t_right, beta_val)
+        )
+
+    j = torch.arange(0, k + 1, dtype=dtype, device=device)
+    return C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
 
 
 # ============================================================================
