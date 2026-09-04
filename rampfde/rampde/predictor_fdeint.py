@@ -90,7 +90,8 @@ def _predictor_weights(
     dtype: torch.dtype,
     device: torch.device,
     *, 
-    graded_time: bool = False
+    graded_time: bool = False,
+    tspan: Optional[torch.tensor] = None,
 ) -> torch.Tensor:
     """
     Compute d_{k+1,j} for j = 0..k, i.e. the weight vector applied to the
@@ -111,11 +112,7 @@ def _predictor_weights(
     """
     j = torch.arange(0, k + 1, dtype=dtype, device=device)
     if graded_time:
-        r = (2.0 - beta_val) / beta_val
-        k_plus_1_r = torch.pow(k + 1, r)
-        j_r = torch.pow(j, r)
-        j_plus_1_r = torch.pow(j + 1, r)
-        return C * (torch.pow(k_plus_1_r - j_r, beta_val) - torch.pow(k_plus_1_r - j_plus_1_r, beta_val))
+        return C * (torch.pow(tspan[k+1] - tspan[j], beta_val) - torch.pow(tspan[k+1] - tspan[j + 1], beta_val))
     else:
         return C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
 
@@ -153,9 +150,7 @@ def _predictor_forward_impl(
     """
     N = len(tspan)
     if graded_time:
-        # For graded time, the effective step size varies, but we can still compute a scaling factor C based on the final time span.
-        r = (2.0 - beta_val) / beta_val
-        C = float(torch.pow(tspan[-1] / torch.pow((N - 1), r), beta_val).item()) / math.gamma(beta_val + 1.0)
+        C = 1 / math.gamma(beta_val + 1.0)
     else:
         h = (tspan[-1] - tspan[0]) / (N - 1)
         C = float(torch.pow(h, beta_val).item()) / math.gamma(beta_val + 1.0)
@@ -184,7 +179,11 @@ def _predictor_forward_impl(
         fhist[k] = f_k.to(dtype_low)
 
         with autocast(device_type="cuda", enabled=False):
-            weights = _predictor_weights(k, beta_val, C, dtype_hi, device, graded_time=graded_time)
+            if graded_time:
+                # For graded time, the coefficients are no longer only dependent on n-j, but we can still compute the weights for the current step.
+                weights = _predictor_weights(k, beta_val, C, dtype_hi, device, graded_time=graded_time, tspan=tspan)
+            else:
+                weights = _predictor_weights(k, beta_val, C, dtype_hi, device)
             conv_sum = _weighted_history_sum(weights, fhist[: k + 1], out_dtype=dtype_hi)
             y_current = y0_hi + conv_sum
 
@@ -251,8 +250,12 @@ def _predictor_backward_impl(
         grad_params: Tuple of gradients for each parameter
     """
     N = len(tspan)
-    h = (tspan[-1] - tspan[0]) / (N - 1)
-    C = float(torch.pow(h, beta_val).item()) / math.gamma(beta_val + 1.0)
+    backward_tspan = tspan[-1] - tspan.flip(0)
+    if graded_time:
+        C = 1 / math.gamma(beta_val + 1.0)
+    else:
+        h = (tspan[-1] - tspan[0]) / (N - 1)
+        C = float(torch.pow(h, beta_val).item()) / math.gamma(beta_val + 1.0)
     device = yt.device
 
     _adj_dtype = adj_storage_dtype if adj_storage_dtype is not None else dtype_hi
@@ -269,7 +272,7 @@ def _predictor_backward_impl(
 
     for r in range(N - 1):
         target_j = N - 2 - r
-        t_j = tspan[target_j]
+        t_j = tspan[target_j]  # For graded time, tspan is already adjusted
 
         y_j = yt[target_j].to(dtype_hi).detach().requires_grad_(True)
 
@@ -280,7 +283,11 @@ def _predictor_backward_impl(
         # v_j = Σ_{i=0}^{r} d_{N-1-i, target_j} · adj_buf[i]
         # Uses the SAME weight formula as the forward pass (row k=r), since
         # d_{n,j} depends only on n-j — see _predictor_weights docstring.
-        weights = _predictor_weights(r, beta_val, C, dtype_hi, device)
+        if graded_time:
+            # For graded time, the coefficients are no longer only dependent on n-j, but we can still compute the weights for the current reversed step.
+            weights = _predictor_weights(r, beta_val, C, dtype_hi, device, graded_time=graded_time, tspan=backward_tspan)
+        else:
+            weights = _predictor_weights(r, beta_val, C, dtype_hi, device)
         v_j = _weighted_history_sum(weights, adj_buf[: r + 1], out_dtype=dtype_hi)
 
         scaled_v = (scale * v_j) if scale is not None else v_j
@@ -367,6 +374,7 @@ class PredictorFDESolverBase(torch.autograd.Function):
         beta_val: float,
         adj_storage_dtype: Optional[torch.dtype],
         loss_scaler: Any,
+        graded_time: bool = False,
         *params: torch.Tensor,
     ) -> torch.Tensor:
         with torch.no_grad():
@@ -377,7 +385,7 @@ class PredictorFDESolverBase(torch.autograd.Function):
                 else dtype_hi
             )
             y_T, yt = _predictor_forward_impl(
-                func, y0, tspan, beta_val, dtype_hi, dtype_low
+                func, y0, tspan, beta_val, dtype_hi, dtype_low, graded_time=graded_time
             )
 
         ctx.save_for_backward(yt, *params)
@@ -387,6 +395,7 @@ class PredictorFDESolverBase(torch.autograd.Function):
         ctx.dtype_hi = dtype_hi
         ctx.adj_storage_dtype = adj_storage_dtype
         ctx.loss_scaler = loss_scaler
+        ctx.graded_time = graded_time
 
         return y_T
 
@@ -422,10 +431,11 @@ class PredictorFDESolverUnscaled(PredictorFDESolverBase):
                 params, dtype_hi, dtype_low,
                 scale=None, check_finite=False,
                 adj_storage_dtype=ctx.adj_storage_dtype,
+                graded_time=ctx.graded_time,
             )
 
         # Signature: (func, y0, tspan, beta_val, adj_storage_dtype, loss_scaler, *params)
-        return (None, grad_y0, None, None, None, None, *grad_params)
+        return (None, grad_y0, None, None, None, None, None, *grad_params)
 
 
 # ============================================================================
@@ -473,6 +483,7 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
                             params, dtype_hi, dtype_low,
                             scale=scaler.S, check_finite=True,
                             adj_storage_dtype=ctx.adj_storage_dtype,
+                            graded_time=ctx.graded_time
                         )
                     if _is_any_infinite((grad_y0, *grad_params)):
                         raise OverflowError("Non-finite gradients after adjoint solve.")
@@ -492,7 +503,7 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
             for name, p in ctx.func.named_parameters():
                 p.data = old_params[name]
 
-        return (None, grad_y0, None, None, None, None, *grad_params)
+        return (None, grad_y0, None, None, None, None, None, *grad_params)
 
 
 # ============================================================================
@@ -528,6 +539,7 @@ class PredictorFDESolverUnscaledSafe(PredictorFDESolverBase):
                     params, dtype_hi, dtype_low,
                     scale=None, check_finite=True,
                     adj_storage_dtype=ctx.adj_storage_dtype,
+                    graded_time=ctx.graded_time
                 )
             if _is_any_infinite((grad_y0, *grad_params)):
                 raise OverflowError("Non-finite gradients after adjoint solve.")
@@ -535,7 +547,7 @@ class PredictorFDESolverUnscaledSafe(PredictorFDESolverBase):
             grad_y0 = torch.full_like(at, float("inf"))
             grad_params = tuple(torch.full_like(p, float("inf")) for p in params)
 
-        return (None, grad_y0, None, None, None, None, *grad_params)
+        return (None, grad_y0, None, None, None, None, None, *grad_params)
 
 
 # ============================================================================
@@ -605,7 +617,8 @@ def predictor_fdeint(
 
     using:
         U^n = U^0 + Σ_{j=0}^{n-1} d_{n,j} f(t_j, U^j),
-        d_{n,j} = h^β / Γ(β+1) · [(n-j)^β - (n-j-1)^β]
+        d_{n,j} = h^β / Γ(β+1) · [(n-j)^β - (n-j-1)^β] on a uniform time grid, or a graded time grid we use
+        d_{n,j} = C · [ ( (n)^r - (j)^r )^β − ( (n)^r - (j+1)^r )^β ] with r = (2-β)/β and C = T^β / ( Γ(β+1) • N^(rβ) ).
 
     with automatic solver selection based on precision, and the EXACT
     discrete adjoint for backward (not the continuous-adjoint approximation
@@ -674,10 +687,12 @@ def predictor_fdeint(
     num_steps = int(round(t_val / h_val)) + 1
 
     if graded_time:
-        # Graded time mesh: t_j = (j/N)^r * T, r = (1-beta)/beta, j = 0..N
+        # Use double-graded time mesh with r = (2 - beta) / beta
         ind = torch.arange(num_steps, dtype=torch.float32, device=device)
-        r = (1.0 - beta_val) / beta_val
-        tspan = (ind / (num_steps - 1)).pow(r) * t_val
+        r = (2.0 - beta_val) / beta_val
+        c = (num_steps - 1) / 2
+        q = 1 - torch.abs(ind - c) / c
+        tspan = t_val/2 * (1 + torch.sign(ind - c) * (1 - torch.pow(q,r)))
     else:
         tspan = torch.linspace(0.0, t_val, num_steps, dtype=torch.float32, device=device)
 
@@ -697,7 +712,7 @@ def predictor_fdeint(
 
     params = tuple(func.parameters())
 
-    solution = solver_class.apply(func, y0, tspan, beta_val, adj_dtype, loss_scaler, *params)
+    solution = solver_class.apply(func, y0, tspan, beta_val, adj_dtype, loss_scaler, graded_time, *params)
 
     if y0_is_tuple:
         return _tensor_to_tuple(solution, numels, shapes)

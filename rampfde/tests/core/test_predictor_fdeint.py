@@ -139,7 +139,7 @@ def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tsp
     dtype = y0.dtype
     device = y0.device
     if graded_time:
-        C = float(torch.pow(tspan[-1] / torch.pow((N - 1), r), beta_val).item()) / math.gamma(beta_val + 1.0)
+        C = 1.0 / math.gamma(beta_val + 1.0)
     else:
         C = float(torch.pow(h, beta_val).item()) / math.gamma(beta_val + 1.0)
 
@@ -152,10 +152,10 @@ def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tsp
 
         j = torch.arange(0, k + 1, dtype=dtype, device=device)
         if graded_time: 
-            k_plus_1_r = torch.pow(k + 1, r)
-            j_r = torch.pow(j, r)
-            j_plus_1_r = torch.pow(j + 1, r)
-            w = C * (torch.pow(k_plus_1_r - j_r, beta_val) - torch.pow(k_plus_1_r - j_plus_1_r, beta_val))
+            w = C * (
+                torch.pow(tspan[k + 1] - tspan[j], beta_val)
+                - torch.pow(tspan[k + 1] - tspan[j + 1], beta_val)
+            )
         else:
             w = C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
 
@@ -166,6 +166,16 @@ def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tsp
         y_current = y0 + conv
 
     return y_current
+
+
+def _double_graded_tspan(T: float, step_size: float, beta_val: float) -> torch.Tensor:
+    """Build the same symmetric two-sided graded mesh as predictor_fdeint."""
+    N = int(round(T / step_size)) + 1
+    ind = torch.arange(N, dtype=torch.float32)
+    r = (2.0 - beta_val) / beta_val
+    c = (N - 1) / 2
+    q = 1 - torch.abs(ind - c) / c
+    return T / 2 * (1 + torch.sign(ind - c) * (1 - torch.pow(q, r)))
 
 
 # ============================================================================
@@ -454,7 +464,8 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
         ref_func = deepcopy(base_func)
         y0_ref = y0.clone().requires_grad_(True)
         out_ref = _reference_predictor(ref_func, y0_ref, self.beta, tspan)
-        out_ref_graded = _reference_predictor(ref_func, y0_ref, self.beta, tspan, graded_time=True)
+        graded_tspan = _double_graded_tspan(self.T, self.step_size, self.beta)
+        out_ref_graded = _reference_predictor(ref_func, y0_ref, self.beta, graded_tspan, graded_time=True)
         out_ref.pow(2).mean().backward()
         out_ref_graded.pow(2).mean().backward()
         ref_y0_grad = _grad(y0_ref).detach().clone()
@@ -497,6 +508,41 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
             self.assertLess(rel_err.item(), 1e-3,
                              f"Param[{i}] gradient mismatch between adjoint and reference "
                              f"(expected tight match — backward is the exact discrete adjoint)")
+
+    def test_graded_mesh_adjoint_matches_reference(self):
+        """The custom graded-mesh forward/backward matches plain autograd."""
+        beta = 0.6
+        T = 0.4
+        step_size = 0.1
+        dim = 3
+        tspan = _double_graded_tspan(T, step_size, beta)
+
+        base_func = SmallMLP(dim=dim, dtype=torch.float64, seed=self.seed)
+        y0 = torch.randn(dim, dtype=torch.float64)
+
+        ref_func = deepcopy(base_func)
+        y0_ref = y0.clone().requires_grad_(True)
+        out_ref = _reference_predictor(
+            ref_func, y0_ref, beta, tspan, graded_time=True
+        )
+        out_ref.pow(2).mean().backward()
+        ref_y0_grad = _grad(y0_ref).detach().clone()
+        ref_param_grads = [_grad(p).detach().clone() for p in ref_func.parameters()]
+
+        adj_func = deepcopy(base_func)
+        y0_adj = y0.clone().requires_grad_(True)
+        out_adj = predictor_fdeint(
+            adj_func, y0_adj, beta=beta, t=T,
+            step_size=step_size, graded_time=True,
+        )
+        out_adj.pow(2).mean().backward()
+        adj_y0_grad = _grad(y0_adj).detach().clone()
+        adj_param_grads = [_grad(p).detach().clone() for p in adj_func.parameters()]
+
+        self.assertTrue(torch.allclose(out_ref, out_adj, rtol=1e-5, atol=1e-6))
+        self.assertTrue(torch.allclose(ref_y0_grad, adj_y0_grad, rtol=1e-5, atol=1e-6))
+        for g_ref, g_adj in zip(ref_param_grads, adj_param_grads):
+            self.assertTrue(torch.allclose(g_ref, g_adj, rtol=1e-5, atol=1e-6))
 
     def test_dynamic_scaler_float32_matches_unscaled(self):
         """DynamicScaler(float32) should give identical results to no-scaler."""
