@@ -125,7 +125,7 @@ class SmallMLP(nn.Module):
 # (not just in sign/direction, unlike the L1 continuous-adjoint case).
 # ---------------------------------------------------------------------------
 
-def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tspan: torch.Tensor) -> torch.Tensor:
+def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tspan: torch.Tensor, *, graded_time: bool = False) -> torch.Tensor:
     """
     Transparent-to-autograd product-rectangle predictor for use as a gradient
     reference. Implements the same recurrence as predictor_fdeint but via
@@ -135,9 +135,13 @@ def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tsp
     """
     N = len(tspan)
     h = (tspan[-1] - tspan[0]) / (N - 1)
+    r = (2.0 - beta_val) / beta_val
     dtype = y0.dtype
     device = y0.device
-    C = float(torch.pow(h, beta_val).item()) / math.gamma(beta_val + 1.0)
+    if graded_time:
+        C = float(torch.pow(tspan[-1] / torch.pow((N - 1), r), beta_val).item()) / math.gamma(beta_val + 1.0)
+    else:
+        C = float(torch.pow(h, beta_val).item()) / math.gamma(beta_val + 1.0)
 
     fhist = []
     y_current = y0
@@ -147,7 +151,13 @@ def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tsp
         fhist.append(f_k)
 
         j = torch.arange(0, k + 1, dtype=dtype, device=device)
-        w = C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
+        if graded_time: 
+            k_plus_1_r = torch.pow(k + 1, r)
+            j_r = torch.pow(j, r)
+            j_plus_1_r = torch.pow(j + 1, r)
+            w = C * (torch.pow(k_plus_1_r - j_r, beta_val) - torch.pow(k_plus_1_r - j_plus_1_r, beta_val))
+        else:
+            w = C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
 
         f_stack = torch.stack(fhist)
         view = (-1,) + (1,) * (f_stack.ndim - 1)
@@ -169,8 +179,8 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
         torch.manual_seed(0)
         np.random.seed(0)
 
-    def _solve(self, func, y0, beta, t, step_size):
-        return predictor_fdeint(func, y0, beta=beta, t=t, step_size=step_size)
+    def _solve(self, func, y0, beta, t, step_size, graded_time=False):
+        return predictor_fdeint(func, y0, beta=beta, t=t, step_size=step_size, graded_time=graded_time)
 
     def test_constant_forcing_is_exact(self):
         """D^0.5 y = 1, y(0)=0 -> exact y(T) = T^0.5 / Γ(1.5).
@@ -187,12 +197,16 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
         func = ConstantForcing(c=1.0)
 
         y_T = self._solve(func, y0, beta, T, step_size)
+        y_T_graded = self._solve(func, y0, beta, T, step_size, graded_time=True)
         exact = T ** beta / math.gamma(1.0 + beta)
 
         err = abs(y_T.item() - exact)
+        err_graded = abs(y_T_graded.item() - exact)
         if not QUIET:
             print(f"\nConstant forcing: y_T={y_T.item():.6f}, exact={exact:.6f}, err={err:.2e}")
+            print(f"Constant forcing (graded): y_T={y_T_graded.item():.6f}, exact={exact:.6f}, err={err_graded:.2e}")
         self.assertLess(err, 1e-5, "Forward error too large for constant forcing (should be ~exact)")
+        self.assertLess(err_graded, 1e-5, "Forward error too large for constant forcing (graded) (should be ~exact)")
 
     def test_polynomial_forcing_accuracy(self):
         """D^0.5 y = (2/Γ(1.5))·t^1.5, y(0)=0 -> exact y(T) = T^2.
@@ -440,7 +454,9 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
         ref_func = deepcopy(base_func)
         y0_ref = y0.clone().requires_grad_(True)
         out_ref = _reference_predictor(ref_func, y0_ref, self.beta, tspan)
+        out_ref_graded = _reference_predictor(ref_func, y0_ref, self.beta, tspan, graded_time=True)
         out_ref.pow(2).mean().backward()
+        out_ref_graded.pow(2).mean().backward()
         ref_y0_grad = _grad(y0_ref).detach().clone()
         ref_param_grads = [_grad(p).detach().clone() for p in ref_func.parameters()]
 
@@ -448,7 +464,9 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
         adj_func = deepcopy(base_func)
         y0_adj = y0.clone().requires_grad_(True)
         out_adj = predictor_fdeint(adj_func, y0_adj, beta=self.beta, t=self.T, step_size=self.step_size)
+        out_adj_graded = predictor_fdeint(adj_func, y0_adj, beta=self.beta, t=self.T, step_size=self.step_size, graded_time=True)
         out_adj.pow(2).mean().backward()
+        out_adj_graded.pow(2).mean().backward()
         adj_y0_grad = _grad(y0_adj).detach().clone()
         adj_param_grads = [_grad(p).detach().clone() for p in adj_func.parameters()]
 
@@ -457,12 +475,19 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
             torch.allclose(out_ref, out_adj, rtol=1e-5, atol=1e-5),
             f"Forward mismatch: ref={out_ref} adj={out_adj}",
         )
+        self.assertTrue(
+            torch.allclose(out_ref_graded, out_adj_graded, rtol=1e-5, atol=1e-5),
+            f"Forward mismatch (graded): ref={out_ref_graded} adj={out_adj_graded}"
+        )
 
         # Gradient w.r.t. y0: should match tightly (exact discrete adjoint)
         rel_err_y0 = (ref_y0_grad - adj_y0_grad).norm() / (ref_y0_grad.norm() + 1e-12)
+        rel_err_y0_graded = (ref_y0_grad - adj_y0_grad).norm() / (ref_y0_grad.norm() + 1e-12)
         if not QUIET:
             print(f"\ny0 grad rel err: {rel_err_y0.item():.2e}")
+            print(f"y0 grad rel err (graded): {rel_err_y0_graded.item():.2e}")
         self.assertLess(rel_err_y0.item(), 1e-3, "y0 gradient mismatch between adjoint and reference")
+        self.assertLess(rel_err_y0_graded.item(), 1e-3, "y0 gradient mismatch (graded) between adjoint and reference")
 
         # Parameter gradients: should ALSO match tightly (exact discrete adjoint)
         for i, (g_ref, g_adj) in enumerate(zip(ref_param_grads, adj_param_grads)):
@@ -483,7 +508,9 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
         m_us = deepcopy(base_func)
         y_us = y0.clone().requires_grad_(True)
         out_us = predictor_fdeint(m_us, y_us, beta=self.beta, t=self.T, step_size=self.step_size, loss_scaler=False)
+        out_us_graded = predictor_fdeint(m_us, y_us, beta=self.beta, t=self.T, step_size=self.step_size, graded_time=True, loss_scaler=False)
         out_us.pow(2).mean().backward()
+        out_us_graded.pow(2).mean().backward()
         g_us = [_grad(y_us).clone()] + [_grad(p).clone() for p in m_us.parameters()]
 
         # Dynamic scaler (float32)
@@ -491,10 +518,13 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
         y_dyn = y0.clone().requires_grad_(True)
         scaler = DynamicScaler(dtype_low=torch.float32)
         out_dyn = predictor_fdeint(m_dyn, y_dyn, beta=self.beta, t=self.T, step_size=self.step_size, loss_scaler=scaler)
+        out_dyn_graded = predictor_fdeint(m_dyn, y_dyn, beta=self.beta, t=self.T, step_size=self.step_size, graded_time=True, loss_scaler=scaler)
         out_dyn.pow(2).mean().backward()
+        out_dyn_graded.pow(2).mean().backward()
         g_dyn = [_grad(y_dyn).clone()] + [_grad(p).clone() for p in m_dyn.parameters()]
 
         self.assertTrue(torch.allclose(out_us, out_dyn, rtol=1e-6, atol=1e-7))
+        self.assertTrue(torch.allclose(out_us_graded, out_dyn_graded, rtol=1e-6, atol=1e-7))
         for g1, g2 in zip(g_us, g_dyn):
             self.assertTrue(torch.allclose(g1, g2, rtol=1e-5, atol=1e-6),
                             "DynamicScaler(float32) gradients differ from unscaled")
@@ -524,10 +554,13 @@ class TestPredictorFDEintDtypePreservation(unittest.TestCase):
         y0 = torch.randn(dim, dtype=dtype, device=device, requires_grad=True)
 
         out = predictor_fdeint(func, y0, beta=0.7, t=0.5, step_size=0.1, loss_scaler=loss_scaler)
+        out_graded = predictor_fdeint(func, y0, beta=0.7, t=0.5, step_size=0.1, graded_time=True, loss_scaler=loss_scaler)
 
         self.assertEqual(out.dtype, dtype, f"Output dtype {out.dtype} != {dtype}")
+        self.assertEqual(out_graded.dtype, dtype, f"Output (graded) dtype {out_graded.dtype} != {dtype}")
 
         out.sum().backward()
+        out_graded.sum().backward()
         y0_grad = _grad(y0)
         self.assertEqual(y0_grad.dtype, dtype, f"y0 grad dtype {y0_grad.dtype} != {dtype}")
         for p in func.parameters():

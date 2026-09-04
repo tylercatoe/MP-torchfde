@@ -27,6 +27,8 @@ EPOCHS="${EPOCHS:-160}"
 SAVE_ROOT="${SAVE_ROOT:-exp_mp_stl10}"
 DATA_ROOT="${DATA_ROOT:-.data/stl10}"
 DOWNLOAD_DATA="${DOWNLOAD_DATA:-0}"
+SPLIT_FILE="${SPLIT_FILE:-}"
+INIT_STATE="${INIT_STATE:-}"
 
 ADJOINT_METHOD="${ADJOINT_METHOD:-predictor-f}"
 DIRECT_METHOD="${DIRECT_METHOD:-predictor}"
@@ -106,6 +108,14 @@ if [ "$UNSTABLE" = "1" ]; then
   unstable_arg="--unstable"
 fi
 
+repro_args=()
+if [ -n "$SPLIT_FILE" ]; then
+  repro_args+=(--split-file "$SPLIT_FILE")
+fi
+if [ -n "$INIT_STATE" ]; then
+  repro_args+=(--init-state "$INIT_STATE")
+fi
+
 conda run -n "$ENV_NAME" python -u "$driver_script" \
   --mode "$MODE" \
   --nepochs "$EPOCHS" \
@@ -125,4 +135,5 @@ conda run -n "$ENV_NAME" python -u "$driver_script" \
   --width "$WIDTH" \
   --train-size "$TRAIN_SIZE" \
   --time-bins "$TIME_BINS" \
+  "${repro_args[@]}" \
   $unstable_arg

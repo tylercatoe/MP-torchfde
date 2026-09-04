@@ -20,6 +20,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 from torchvision.datasets import STL10
 import torchvision.transforms as transforms
+from stl10_reproducibility import load_initial_parameters, load_split_indices
 
 
 # =============================================================================
@@ -83,7 +84,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-data", action="store_true", default=True, help="Download STL10 if missing")
     parser.add_argument("--no-download-data", action="store_false", dest="download_data", help="Do not download STL10")
     parser.add_argument("--train-size", type=int, default=4000, help="Size of train subset from STL10 train split")
+    parser.add_argument("--split-file", type=str, default=None, help="Saved train/validation split shared by all runs")
     parser.add_argument("--save", type=str, default="./exp_mp_stl10", help="Directory for logs and outputs")
+    parser.add_argument("--init-state", type=str, default=None, help="Saved initial model parameters shared by all runs")
     parser.add_argument("--gpu", type=int, default=0, help="GPU device ID")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
@@ -340,15 +343,18 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     np.random.seed(seed)
     random.seed(seed)
 
 def worker_init_fn(worker_id: int) -> None:
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
-def get_stl10_loaders(data_root: str, download_data: bool, batch_size: int, test_batch_size: int, num_workers: int, train_size: int, seed: Optional[int] = None) -> Tuple[DataLoader, DataLoader, DataLoader]:
+def get_stl10_loaders(data_root: str, download_data: bool, batch_size: int, test_batch_size: int, num_workers: int, train_size: int, seed: Optional[int] = None, split_file: Optional[str] = None) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Return train_loader, val_loader, train_eval_loader for STL10."""
 
     mean = (0.4467, 0.4398, 0.4066)
@@ -378,14 +384,22 @@ def get_stl10_loaders(data_root: str, download_data: bool, batch_size: int, test
             f"--train-size ({train_size}) must be less than STL10 train size ({len(full_train_aug)})."
         )
 
-    split_seed = seed if seed is not None else 42
-    generator = torch.Generator().manual_seed(split_seed)
-    indices = torch.randperm(len(full_train_aug), generator=generator)
-
-    train_idx = indices[:train_size].tolist()
-    val_idx = indices[train_size:].tolist()
+    if split_file:
+        train_idx, val_idx = load_split_indices(
+            split_file,
+            dataset_size=len(full_train_aug),
+            train_size=train_size,
+        )
+    else:
+        split_seed = seed if seed is not None else 42
+        generator = torch.Generator().manual_seed(split_seed)
+        indices = torch.randperm(len(full_train_aug), generator=generator)
+        train_idx = indices[:train_size].tolist()
+        val_idx = indices[train_size:].tolist()
     if not val_idx:
         raise ValueError("Validation split is empty. Reduce --train-size.")
+
+    loader_generator = torch.Generator().manual_seed(seed if seed is not None else 42)
 
     train_set = Subset(full_train_aug, train_idx)
     val_set = Subset(full_train_eval, val_idx)
@@ -401,6 +415,7 @@ def get_stl10_loaders(data_root: str, download_data: bool, batch_size: int, test
         drop_last=True,
         pin_memory=pin_memory,
         worker_init_fn=worker_init_fn,
+        generator=loader_generator,
     )
     val_loader = DataLoader(
         val_set,
@@ -715,6 +730,9 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
 
     fdeint_solver = build_solver(mode_cfg)
     model = MPFDE_STL10(width=args.width, fde_config=fde_config, fdeint_solver=fdeint_solver, is_stable=not args.unstable, time_bins=args.time_bins).to(device)
+    if args.init_state:
+        load_initial_parameters(model, args.init_state)
+        logger.info(f"Loaded shared initial parameters from {args.init_state}")
 
     logger.info(f"\n\nModel architecture:\n{model}")
     logger.info(f"\nTotal parameters: {count_parameters(model):,}\n")
@@ -976,6 +994,7 @@ if __name__ == "__main__":
         num_workers=args.num_workers,
         train_size=args.train_size,
         seed=args.seed,
+        split_file=args.split_file,
     )
     #print('Data loaders obtained')
     train(args, mode_cfg, device, train_loader, val_loader, train_eval_loader)

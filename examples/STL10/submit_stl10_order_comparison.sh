@@ -9,11 +9,11 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_root="${PROJECT_ROOT:-$(cd "$script_dir/../.." && pwd)}"
 ode_dir="$project_root/rampfde/paper/stl10"
 ode_script="$ode_dir/ode_stl10.py"
+repro_script="$project_root/examples/STL10/create_stl10_repro_artifacts.py"
 fde_sbatch="$script_dir/train_mp_fde_stl10.sbatch"
 analysis_script="$script_dir/analyze_stl10_order_comparison.py"
 
 output_root="${SAVE_ROOT:-$script_dir/exp_stl10_order_comparison}"
-manifest_path="$output_root/comparison_manifest.csv"
 env_name="${ENV_NAME:-torch28}"
 seed="${SEED:-25}"
 epochs="${EPOCHS:-160}"
@@ -36,6 +36,10 @@ if [ ! -f "$ode_script" ]; then
   echo "ERROR: ODE script not found: $ode_script" >&2
   exit 1
 fi
+if [ ! -f "$repro_script" ]; then
+  echo "ERROR: reproducibility helper not found: $repro_script" >&2
+  exit 1
+fi
 if [ ! -f "$fde_sbatch" ]; then
   echo "ERROR: FDE sbatch script not found: $fde_sbatch" >&2
   exit 1
@@ -48,6 +52,9 @@ fi
 mkdir -p "$output_root" "$output_root/slurm_logs"
 output_root="$(cd "$output_root" && pwd)"
 manifest_path="$output_root/comparison_manifest.csv"
+repro_dir="$output_root/repro"
+split_file="$repro_dir/stl10_split.pt"
+init_state="$repro_dir/stl10_initial_parameters.pt"
 printf 'equation,beta,method,precision,job_id,result_root,log_path\n' > "$manifest_path"
 
 echo "Submitting matched STL10 ODE/FDE comparison"
@@ -55,6 +62,25 @@ echo "  project_root=$project_root"
 echo "  output_root=$output_root"
 echo "  seed=$seed epochs=$epochs width=$width batch_size=$batch_size"
 echo "  manifest=$manifest_path"
+
+if [ "$dry_run" = "1" ]; then
+  echo "dry-run: would create shared split and initial-state artifacts in $repro_dir"
+else
+  if [ -f "$split_file" ] && [ -f "$init_state" ]; then
+    echo "Reusing shared reproducibility artifacts in $repro_dir"
+  elif [ ! -e "$split_file" ] && [ ! -e "$init_state" ]; then
+    MPLBACKEND=Agg conda run -n "$env_name" python "$repro_script" \
+      --split-file "$split_file" \
+      --init-state "$init_state" \
+      --seed "$seed" \
+      --dataset-size 5000 \
+      --train-size "$train_size" \
+      --width "$width"
+  else
+    echo "ERROR: only one reproducibility artifact exists in $repro_dir; refusing to continue." >&2
+    exit 1
+  fi
+fi
 
 submit_ode_job() {
   local precision="$1"
@@ -71,7 +97,7 @@ submit_ode_job() {
       --job-name="$job_name" \
       --chdir="$script_dir" \
       --partition=work1 \
-      --time=48:00:00 \
+      --time=15:00:00 \
       --nodes=1 \
       --ntasks=1 \
       --cpus-per-task=8 \
@@ -89,7 +115,7 @@ export PYTHONPATH="$project_root/rampfde:\${PYTHONPATH:-}"
 export MPLBACKEND=Agg
 
 mkdir -p "$result_root"
-conda run -n "$env_name" python -u "$ode_script" --odeint rampde --method rk4 --precision "$precision" --no_grad_scaler --no_dynamic_scaler --seed "$seed" --nepochs "$epochs" --lr "$learning_rate" --momentum 0.9 --batch_size "$batch_size" --test_batch_size "$test_batch_size" --weight_decay "$weight_decay" --width "$width" --test_freq 1 --results_dir "$result_root"
+conda run -n "$env_name" python -u "$ode_script" --odeint rampde --method rk4 --precision "$precision" --no_grad_scaler --no_dynamic_scaler --seed "$seed" --nepochs "$epochs" --lr "$learning_rate" --momentum 0.9 --batch_size "$batch_size" --test_batch_size "$test_batch_size" --weight_decay "$weight_decay" --width "$width" --test_freq 1 --split_file "$split_file" --init_state "$init_state" --results_dir "$result_root"
 EOF
     )
     echo "submitted: equation=ode precision=$precision job_id=$job_id"
@@ -109,7 +135,7 @@ submit_fde_job() {
   local export_vars
   local job_id
 
-  export_vars="ALL,ENV_NAME=${env_name},MODE=${mode},EPOCHS=${epochs},SAVE_ROOT=${run_root},BETA=${beta},DTYPE_HI=float32,MP_DTYPE=${precision},MP_LOSS_SCALER=false,DOWNLOAD_DATA=${download_data},WIDTH=${width},BATCH_SIZE=${batch_size},TEST_BATCH_SIZE=${test_batch_size},STEP_SIZE=${step_size},T_FINAL=${t_final},TRAIN_SIZE=${train_size},TIME_BINS=${time_bins}"
+  export_vars="ALL,ENV_NAME=${env_name},MODE=${mode},EPOCHS=${epochs},SAVE_ROOT=${run_root},BETA=${beta},DTYPE_HI=float32,MP_DTYPE=${precision},MP_LOSS_SCALER=false,DOWNLOAD_DATA=${download_data},SPLIT_FILE=${split_file},INIT_STATE=${init_state},WIDTH=${width},BATCH_SIZE=${batch_size},TEST_BATCH_SIZE=${test_batch_size},STEP_SIZE=${step_size},T_FINAL=${t_final},TRAIN_SIZE=${train_size},TIME_BINS=${time_bins}"
 
   if [ "$dry_run" = "1" ]; then
     job_id="DRY_RUN"

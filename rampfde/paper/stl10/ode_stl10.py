@@ -23,7 +23,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # Add parent directory to path for common imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from stl10_reproducibility import load_initial_parameters, load_split_indices
 from experiment_runtime import (
     setup_environment,
     get_precision_dtype,
@@ -60,6 +62,10 @@ def create_parser():
                         help='evaluate / log every N training steps')
     parser.add_argument('--width', type=int, default=64,
                         help='Base channel width (default: 64)')
+    parser.add_argument('--split_file', type=str, default=None,
+                        help='Saved train/validation split shared by all runs')
+    parser.add_argument('--init_state', type=str, default=None,
+                        help='Saved initial model parameters shared by all runs')
     return parser
 
 
@@ -259,12 +265,14 @@ def worker_init_fn(worker_id):
     # Get the base random seed from the main process
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
+    random.seed(worker_seed)
     # Note: torch seed is automatically handled for DataLoader workers
 
 def get_stl10_loaders(batch_size=128,
                       test_batch_size=1000,
                       perc=1.0,
-                      seed=None):
+                      seed=None,
+                      split_file=None):
     """Return train_loader, test_loader, train_eval_loader for STL-10.
 
     Parameters
@@ -305,20 +313,31 @@ def get_stl10_loaders(batch_size=128,
                             download=True, transform=transform_test)
 
     # ----- deterministic split -----
-    # Use provided seed for data split, or default to 42 for backward compatibility
-    split_seed = seed if seed is not None else 42
-    g = torch.Generator().manual_seed(split_seed)
-    idx = torch.randperm(len(full_train_aug), generator=g)
-    idx_train, idx_val = idx[:int(4000*perc)], idx[4000:]          # 4 k / 1 k
+    train_size = int(4000 * perc)
+    if split_file:
+        train_idx, val_idx = load_split_indices(
+            split_file,
+            dataset_size=len(full_train_aug),
+            train_size=train_size,
+        )
+    else:
+        # Use provided seed for data split, or default to 42 for backward compatibility
+        split_seed = seed if seed is not None else 42
+        g = torch.Generator().manual_seed(split_seed)
+        idx = torch.randperm(len(full_train_aug), generator=g)
+        train_idx, val_idx = idx[:train_size].tolist(), idx[train_size:].tolist()
 
-    train_set = Subset(full_train_aug,  idx_train.tolist())
-    val_set   = Subset(full_train_eval, idx_val.tolist())         # no augmentation
-    train_eval_set   = Subset(full_train_eval, idx_train.tolist())         # no augmentation
+    train_set = Subset(full_train_aug, train_idx)
+    val_set   = Subset(full_train_eval, val_idx)         # no augmentation
+    train_eval_set   = Subset(full_train_eval, train_idx)         # no augmentation
+
+    loader_generator = torch.Generator().manual_seed(seed if seed is not None else 42)
 
     # ----- loaders with proper seeding -----
     train_loader = DataLoader(train_set, batch_size=batch_size,
                               shuffle=True,  num_workers=2, drop_last=True,
-                              worker_init_fn=worker_init_fn)
+                              worker_init_fn=worker_init_fn,
+                              generator=loader_generator)
     val_loader   = DataLoader(val_set,   batch_size=test_batch_size,
                               shuffle=False, num_workers=2,
                               worker_init_fn=worker_init_fn)
@@ -400,6 +419,8 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.manual_seed(args.seed)
             torch.cuda.manual_seed_all(args.seed)  # for multi-GPU setups
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
     else:
         print("No seed specified, using random initialization")
     
@@ -445,13 +466,17 @@ def main():
         # Create model
         model = MPNODE_STL10(args.width, args, precision, odeint_func, DynamicScaler, 
                            dynamic_scaler_enabled, grad_scaler_enabled).to(device)
+        if args.init_state:
+            load_initial_parameters(model, args.init_state)
+            print(f"Loaded shared initial parameters from {args.init_state}")
         print(model)
         print('Number of parameters: {}'.format(count_parameters(model)))
 
         criterion = nn.CrossEntropyLoss().to(device)
 
         train_loader, test_loader, train_eval_loader = get_stl10_loaders(
-             args.batch_size, args.test_batch_size, seed=args.seed
+             args.batch_size, args.test_batch_size, seed=args.seed,
+             split_file=args.split_file
         )
 
         data_gen = inf_generator(train_loader)

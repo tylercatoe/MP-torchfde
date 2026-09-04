@@ -89,6 +89,8 @@ def _predictor_weights(
     C: float,
     dtype: torch.dtype,
     device: torch.device,
+    *, 
+    graded_time: bool = False
 ) -> torch.Tensor:
     """
     Compute d_{k+1,j} for j = 0..k, i.e. the weight vector applied to the
@@ -96,14 +98,26 @@ def _predictor_weights(
     pass, adjoint-history in the backward pass — the two are identical
     because d_{n,j} depends only on n - j).
 
-    Returns a 1-D tensor of shape (k+1,):
+    If `graded_time` is True, the weights are adjusted to account for a graded time grid.
+
+    If uniform time, returns a 1-D tensor of shape (k+1,):
         w[j] = C · [ (k+1-j)^β − (k-j)^β ],  j = 0..k
+
+    If graded time, returns a 1-D tensor of shape (k+1,) with weights computed based on the graded time mesh.
+        w[j] = C · [ ( (k+1)^r - (j)^r )^β − ( (k+1)^r - (j+1)^r )^β ],  j = 0..k
 
     No special-casing is needed at j=0 (unlike the L1 scheme): (k-j)^β = 0^β
     = 0 when j=k is well defined for β > 0.
     """
     j = torch.arange(0, k + 1, dtype=dtype, device=device)
-    return C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
+    if graded_time:
+        r = (2.0 - beta_val) / beta_val
+        k_plus_1_r = torch.pow(k + 1, r)
+        j_r = torch.pow(j, r)
+        j_plus_1_r = torch.pow(j + 1, r)
+        return C * (torch.pow(k_plus_1_r - j_r, beta_val) - torch.pow(k_plus_1_r - j_plus_1_r, beta_val))
+    else:
+        return C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
 
 
 # ============================================================================
@@ -117,6 +131,8 @@ def _predictor_forward_impl(
     beta_val: float,
     dtype_hi: torch.dtype,
     dtype_low: torch.dtype,
+    *, 
+    graded_time: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Run the product-rectangle predictor forward with mixed precision.
@@ -128,6 +144,7 @@ def _predictor_forward_impl(
         beta_val  : Fractional order as Python float
         dtype_hi  : High-precision dtype for weights and accumulation
         dtype_low : Low-precision dtype for function evaluation and f-history
+        graded_time : If True, use a graded time grid.
 
     Returns:
         y_T  : Final solution U^{N-1}, shape (*state), dtype dtype_hi
@@ -135,8 +152,13 @@ def _predictor_forward_impl(
                (saved for backward; NOT the same as the transient f-history)
     """
     N = len(tspan)
-    h = (tspan[-1] - tspan[0]) / (N - 1)
-    C = float(torch.pow(h, beta_val).item()) / math.gamma(beta_val + 1.0)
+    if graded_time:
+        # For graded time, the effective step size varies, but we can still compute a scaling factor C based on the final time span.
+        r = (2.0 - beta_val) / beta_val
+        C = float(torch.pow(tspan[-1] / torch.pow((N - 1), r), beta_val).item()) / math.gamma(beta_val + 1.0)
+    else:
+        h = (tspan[-1] - tspan[0]) / (N - 1)
+        C = float(torch.pow(h, beta_val).item()) / math.gamma(beta_val + 1.0)
     device = y0.device
 
     y0_hi = y0.to(dtype_hi)
@@ -162,7 +184,7 @@ def _predictor_forward_impl(
         fhist[k] = f_k.to(dtype_low)
 
         with autocast(device_type="cuda", enabled=False):
-            weights = _predictor_weights(k, beta_val, C, dtype_hi, device)
+            weights = _predictor_weights(k, beta_val, C, dtype_hi, device, graded_time=graded_time)
             conv_sum = _weighted_history_sum(weights, fhist[: k + 1], out_dtype=dtype_hi)
             y_current = y0_hi + conv_sum
 
@@ -188,6 +210,8 @@ def _predictor_backward_impl(
     scale: Optional[float] = None,
     check_finite: bool = False,
     adj_storage_dtype: Optional[torch.dtype] = None,
+    *, 
+    graded_time: bool = False,
 ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
     """
     Exact discrete adjoint of the product-rectangle predictor, run forward
@@ -220,6 +244,7 @@ def _predictor_backward_impl(
                             None (default) → dtype_hi. Set to dtype_low to
                             halve adjoint memory (same trade-off as fdeint's
                             adj_dtype).
+        graded_time       : If True, the time points in tspan are treated as graded,
 
     Returns:
         grad_y0    : Gradient w.r.t. the initial condition y_0
