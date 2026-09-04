@@ -69,7 +69,12 @@ else
   if [ -f "$split_file" ] && [ -f "$init_state" ]; then
     echo "Reusing shared reproducibility artifacts in $repro_dir"
   elif [ ! -e "$split_file" ] && [ ! -e "$init_state" ]; then
-    MPLBACKEND=Agg conda run -n "$env_name" python "$repro_script" \
+    # Artifact creation happens on the login node, so initialize conda here
+    # before submitting the GPU jobs.
+    module load anaconda3/2023.09-0
+    eval "$(conda shell.bash hook)"
+    conda activate "$env_name"
+    MPLBACKEND=Agg python "$repro_script" \
       --split-file "$split_file" \
       --init-state "$init_state" \
       --seed "$seed" \
