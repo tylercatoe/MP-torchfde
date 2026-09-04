@@ -92,6 +92,7 @@ def _predictor_weights(
     *, 
     graded_time: bool = False,
     tspan: Optional[torch.Tensor] = None,
+    backward_time: bool = False,
 ) -> torch.Tensor:
     """
     Compute d_{k+1,j} for j = 0..k, i.e. the weight vector applied to the
@@ -115,6 +116,12 @@ def _predictor_weights(
             raise ValueError("tspan is required for graded-time predictor weights")
         t_next = tspan[k + 1]
         t_left = tspan[: k + 1]
+        if backward_time:
+            t_prev = tspan[k]
+            return C * (
+                torch.pow(t_next - t_left, beta_val)
+                - torch.pow(t_prev - t_left, beta_val)
+            )
         t_right = tspan[1: k + 2]
         return C * (
             torch.pow(t_next - t_left, beta_val)
@@ -293,7 +300,16 @@ def _predictor_backward_impl(
         # d_{n,j} depends only on n-j — see _predictor_weights docstring.
         if graded_time:
             # For graded time, the coefficients are no longer only dependent on n-j, but we can still compute the weights for the current reversed step.
-            weights = _predictor_weights(r, beta_val, C, dtype_hi, device, graded_time=graded_time, tspan=backward_tspan)
+            weights = _predictor_weights(
+                r,
+                beta_val,
+                C,
+                dtype_hi,
+                device,
+                graded_time=graded_time,
+                tspan=backward_tspan,
+                backward_time=True,
+            )
         else:
             weights = _predictor_weights(r, beta_val, C, dtype_hi, device)
         v_j = _weighted_history_sum(weights, adj_buf[: r + 1], out_dtype=dtype_hi)
