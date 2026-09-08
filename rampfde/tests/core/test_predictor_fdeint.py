@@ -260,14 +260,24 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
         func = PolyForcing(coeff=coeff, exponent=exponent)
         exact = T ** 2
 
+        rate = float("nan")
+        rate_graded = float("nan")
+
         for i in range(num_refinements):
             y_T = self._solve(func, y0, beta, T, step_size)
             y_T_graded = self._solve(func, y0, beta, T, step_size, graded_time=True)
             step_size /= 2
             err = abs(y_T.item() - exact)
             err_graded = abs(y_T_graded.item() - exact)
-            print(f"\nPoly forcing: y_T={y_T.item():.6f}, exact={exact:.6f}, err={err:.2e}")
-            print(f"Poly forcing (graded): y_T={y_T_graded.item():.6f}, exact={exact:.6f}, err={err_graded:.2e}")
+            if i > 0: 
+                rate = math.log(prev_err / err) / math.log(2)
+                rate_graded = math.log(prev_err_graded / err_graded) / math.log(2)
+                print(f"\nPoly forcing: err={err:.2e}, rate = {rate:.2e}, err_graded={err_graded:.2e}, rate_graded = {rate_graded:.2e}, step_size={step_size:.6f}")
+            else:
+                print(f"\nPoly forcing: err={err:.2e}, err_graded={err_graded:.2e}, step_size={step_size:.6f}")
+            prev_err = err
+            prev_err_graded = err_graded
+
         self.assertLess(err, 0.05, "Forward error too large for polynomial forcing")
         self.assertLess(err_graded, 0.05, "Forward error too large for polynomial forcing (graded)")
 
