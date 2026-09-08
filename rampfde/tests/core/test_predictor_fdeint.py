@@ -248,6 +248,30 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
         self.assertLess(err, 0.05, "Forward error too large for polynomial forcing")
         self.assertLess(err_graded, 0.05, "Forward error too large for polynomial forcing (graded)")
 
+    def test_polynomail_forcing_convergence(self):  
+        beta = 0.5
+        T = 1.0
+        step_size = 0.1
+        y0 = torch.tensor([0.0])
+        num_refinements = 5
+
+        coeff = 2.0 / math.gamma(3.0 - beta)
+        exponent = 2.0 - beta
+        func = PolyForcing(coeff=coeff, exponent=exponent)
+        exact = T ** 2
+
+        for i in range(num_refinements):
+            y_T = self._solve(func, y0, beta, T, step_size)
+            y_T_graded = self._solve(func, y0, beta, T, step_size, graded_time=True)
+            step_size /= 2
+            err = abs(y_T.item() - exact)
+            err_graded = abs(y_T_graded.item() - exact)
+            print(f"\nPoly forcing: y_T={y_T.item():.6f}, exact={exact:.6f}, err={err:.2e}")
+            print(f"Poly forcing (graded): y_T={y_T_graded.item():.6f}, exact={exact:.6f}, err={err_graded:.2e}")
+        self.assertLess(err, 0.05, "Forward error too large for polynomial forcing")
+        self.assertLess(err_graded, 0.05, "Forward error too large for polynomial forcing (graded)")
+
+
     def test_different_beta_values(self):
         """Check that different β values give different trajectories (sanity check)."""
         T = 1.0
