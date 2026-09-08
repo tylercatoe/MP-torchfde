@@ -253,7 +253,7 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
         T = 1.0
         step_size = 0.1
         y0 = torch.tensor([0.0])
-        num_refinements = 5
+        num_refinements = 10
 
         coeff = 2.0 / math.gamma(3.0 - beta)
         exponent = 2.0 - beta
