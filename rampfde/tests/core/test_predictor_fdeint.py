@@ -237,12 +237,16 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
         func = PolyForcing(coeff=coeff, exponent=exponent)
 
         y_T = self._solve(func, y0, beta, T, step_size)
+        y_T_graded = self._solve(func, y0, beta, T, step_size, graded_time=True)
         exact = T ** 2
 
         err = abs(y_T.item() - exact)
+        err_graded = abs(y_T_graded.item() - exact)
         if not QUIET:
             print(f"\nPoly forcing: y_T={y_T.item():.6f}, exact={exact:.6f}, err={err:.2e}")
+            print(f"Poly forcing (graded): y_T={y_T_graded.item():.6f}, exact={exact:.6f}, err={err_graded:.2e}")
         self.assertLess(err, 0.05, "Forward error too large for polynomial forcing")
+        self.assertLess(err_graded, 0.05, "Forward error too large for polynomial forcing (graded)")
 
     def test_different_beta_values(self):
         """Check that different β values give different trajectories (sanity check)."""
