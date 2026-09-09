@@ -131,6 +131,40 @@ def _predictor_weights(
     j = torch.arange(0, k + 1, dtype=dtype, device=device)
     return C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
 
+# ============================================================================
+# Corrector weights computation for graded time
+# ============================================================================
+
+def _corrector_weights(
+    k: int,
+    beta_val: float,
+    dtype: torch.dtype,
+    device: torch.device,
+    *, 
+    tspan: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Compute the corrector weights for the graded time predictor-corrector scheme.
+
+    If `graded_time` is True, the weights are adjusted to account for a graded time grid.
+
+    Returns a 1-D tensor of shape (k+1,) with weights computed based on the graded time mesh.
+        w[j] = C · [ ( (k+1)^r - (j)^r )^β − ( (k+1)^r - (j+1)^r )^β ],  j = 0..k
+
+    No special-casing is needed at j=0 (unlike the L1 scheme): (k-j)^β = 0^β
+    = 0 when j=k is well defined for β > 0.
+    """
+    if tspan is None:
+        raise ValueError("tspan is required for graded-time corrector weights")
+    t_next = tspan[k + 1]
+    t_left = tspan[: k + 1]
+    t_left_plus_1 = tspan[1: k + 2]
+    h_i = tspan[1:k+1] - tspan[:k]  # Compute step sizes h_i for i = 0 to k-1
+    gamma_beta = math.gamma(beta_val)
+    A_k_plus_1_i = 1 / (h_i * gamma_beta) * ( ( torch.pow((t_next - t_left), beta_val + 1) - torch.pow((t_next - t_left_plus_1), beta_val + 1) ) / (beta_val + 1) - ( t_next - t_left_plus_1 ) * ( torch.pow(t_next - t_left, beta_val) - torch.pow(t_next - t_left_plus_1, beta_val) ) / beta_val )
+    B_k_plus_1 = 1 / (h_i * gamma_beta) * ( (t_next - t_left) * (torch.pow((t_next - t_left), beta_val) - torch.pow((t_next - t_left_plus_1), beta_val) ) / (beta_val) - ( torch.pow(t_next - t_left, beta_val + 1) - torch.pow(t_next - t_left_plus_1, beta_val + 1) ) / (beta_val + 1) )
+
+    return A_k_plus_1_i, B_k_plus_1
 
 # ============================================================================
 # Core forward helper
@@ -203,10 +237,14 @@ def _predictor_forward_impl(
             conv_sum = _weighted_history_sum(weights, fhist[: k + 1], out_dtype=dtype_hi)
             y_current = y0_hi + conv_sum
 
-        # if graded_time:
-        #     # For graded time, we use predictor-corrector 
-        #     with autocast(device_type="cuda", dtype=dtype_low):
-        #         f_k_plus_1_Pred = func(tspan[k+1], y_current)
+        if graded_time:
+            # For graded time, we use predictor-corrector 
+            with autocast(device_type="cuda", dtype=dtype_low):
+                f_k_plus_1_Pred = func(tspan[k+1], y_current)
+            with autocast(device_type="cuda", enabled=False):
+                A_k_plus_1_i, B_k_plus_1 = _corrector_weights(k-1, beta_val, dtype_hi, device,tspan=tspan)
+                conv_sum_corrector = _weighted_history_sum(A_k_plus_1_i, fhist[: k], out_dtype=dtype_hi) + _weighted_history_sum(B_k_plus_1, fhist[1:k+1], out_dtype=dtype_hi)
+                y_current = y0_hi + conv_sum_corrector + torch.pow((tspan[k+1] - tspan[k]), beta_val) / math.gamma(beta_val + 2.0) * (beta_val * f_k + f_k_plus_1_Pred)
             
         yt[k + 1] = y_current.to(dtype_low)
 
