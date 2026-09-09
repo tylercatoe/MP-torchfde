@@ -93,6 +93,19 @@ class PolyForcing(nn.Module):
         return torch.full_like(y, val)
 
 
+class PowerForcing(nn.Module):
+    """f(t, y) = coeff·t^exp for an initially nonsmooth power solution."""
+    def __init__(self, coeff: float, exponent: float):
+        super().__init__()
+        self.coeff = coeff
+        self.exponent = exponent
+
+    def forward(self, t, y):
+        tv = float(t)
+        val = self.coeff * (tv ** self.exponent) if tv > 0.0 else 0.0
+        return torch.full_like(y, val)
+
+
 class LinearDecay(nn.Module):
     """f(t, y) = -w·y  (nonlinear with learnable weight for gradient tests)."""
     def __init__(self, w: float = 1.0, dtype=torch.float32):
@@ -280,6 +293,64 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
 
         self.assertLess(err, 0.05, "Forward error too large for polynomial forcing")
         self.assertLess(err_graded, 0.05, "Forward error too large for polynomial forcing (graded)")
+
+
+    def test_non_smooth_solution(self):
+        """Compare convergence for y(t)=t^gamma, which is nonsmooth at t=0.
+
+        For 0 < beta < gamma < 1,
+
+            D^beta t^gamma = Gamma(gamma+1) /
+                Gamma(gamma+1-beta) * t^(gamma-beta).
+
+        Choosing gamma > beta keeps the forcing finite at t=0 while the exact
+        solution has an unbounded first derivative there.
+        """
+        beta = 0.5
+        gamma = 0.75
+        T = 1.0
+        step_size = 0.1
+        num_refinements = 5
+        y0 = torch.tensor([0.0])
+
+        coeff = math.gamma(gamma + 1.0) / math.gamma(gamma + 1.0 - beta)
+        exponent = gamma - beta
+        func = PowerForcing(coeff=coeff, exponent=exponent)
+        exact = T ** gamma
+
+        prev_err = None
+        prev_err_graded = None
+        err = err_graded = float("inf")
+
+        for i in range(num_refinements):
+            current_step = step_size
+            y_T = self._solve(func, y0, beta, T, current_step)
+            y_T_graded = self._solve(func, y0, beta, T, current_step, graded_time=True)
+
+            err = abs(y_T.item() - exact)
+            err_graded = abs(y_T_graded.item() - exact)
+
+            if not QUIET:
+                if prev_err is None:
+                    print(
+                        f"\nNonsmooth solution: err={err:.2e}, "
+                        f"err_graded={err_graded:.2e}, step_size={current_step:.6f}"
+                    )
+                else:
+                    rate = math.log(prev_err / err) / math.log(2)
+                    rate_graded = math.log(prev_err_graded / err_graded) / math.log(2)
+                    print(
+                        f"\nNonsmooth solution: err={err:.2e}, rate={rate:.2f}, "
+                        f"err_graded={err_graded:.2e}, rate_graded={rate_graded:.2f}, "
+                        f"step_size={current_step:.6f}"
+                    )
+
+            prev_err = err
+            prev_err_graded = err_graded
+            step_size /= 2
+
+        self.assertLess(err, 0.1, "Forward error too large for nonsmooth solution")
+        self.assertLess(err_graded, 0.1, "Forward error too large for nonsmooth solution (graded)")
 
 
     def test_different_beta_values(self):

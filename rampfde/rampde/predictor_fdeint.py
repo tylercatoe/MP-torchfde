@@ -122,10 +122,10 @@ def _predictor_weights(
                 torch.pow(t_next - t_left, beta_val)
                 - torch.pow(t_prev - t_left, beta_val)
             )
-        t_right = tspan[1: k + 2]
+        t_left_plus_1 = tspan[1: k + 2]
         return C * (
             torch.pow(t_next - t_left, beta_val)
-            - torch.pow(t_next - t_right, beta_val)
+            - torch.pow(t_next - t_left_plus_1, beta_val)
         )
 
     j = torch.arange(0, k + 1, dtype=dtype, device=device)
@@ -148,6 +148,7 @@ def _predictor_forward_impl(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Run the product-rectangle predictor forward with mixed precision.
+    Note that if we are using a graded mesh for better convergence, we use it with predictor-corrector
 
     Args:
         func      : FDE RHS f(t, y)
@@ -156,7 +157,7 @@ def _predictor_forward_impl(
         beta_val  : Fractional order as Python float
         dtype_hi  : High-precision dtype for weights and accumulation
         dtype_low : Low-precision dtype for function evaluation and f-history
-        graded_time : If True, use a graded time grid.
+        graded_time : If True, use a graded time grid and predictor-corrector
 
     Returns:
         y_T  : Final solution U^{N-1}, shape (*state), dtype dtype_hi
@@ -202,6 +203,11 @@ def _predictor_forward_impl(
             conv_sum = _weighted_history_sum(weights, fhist[: k + 1], out_dtype=dtype_hi)
             y_current = y0_hi + conv_sum
 
+        # if graded_time:
+        #     # For graded time, we use predictor-corrector 
+        #     with autocast(device_type="cuda", dtype=dtype_low):
+        #         f_k_plus_1_Pred = func(tspan[k+1], y_current)
+            
         yt[k + 1] = y_current.to(dtype_low)
 
     del fhist

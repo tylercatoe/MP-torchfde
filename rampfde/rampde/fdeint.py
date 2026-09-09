@@ -2,7 +2,7 @@
 Mixed-precision FDE solver for rampde.
 
 Implements the L1 scheme for Caputo fractional differential equations:
-    D^β y(t) = f(t, y),  y(0) = y0,  β ∈ (0, 1)
+    D^β y(t) = f(t, y),  y(0) = y0,  β ∈ (0, 1]
 
 Architecture mirrors rampde's fixed-grid ODE pattern:
   - Forward:  L1 scheme with autocast for f-eval, high-precision accumulation
