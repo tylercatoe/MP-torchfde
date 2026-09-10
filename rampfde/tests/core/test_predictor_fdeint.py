@@ -105,6 +105,10 @@ class PowerForcing(nn.Module):
         val = self.coeff * (tv ** self.exponent) if tv > 0.0 else 0.0
         return torch.full_like(y, val)
 
+class LinearForcing:
+    def __call__(self, t, y):
+        return 1.0 - y
+
 
 class LinearDecay(nn.Module):
     """f(t, y) = -w·y  (nonlinear with learnable weight for gradient tests)."""
@@ -260,6 +264,91 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
             print(f"Poly forcing (graded): y_T={y_T_graded.item():.6f}, exact={exact:.6f}, err={err_graded:.2e}")
         self.assertLess(err, 0.05, "Forward error too large for polynomial forcing")
         self.assertLess(err_graded, 0.05, "Forward error too large for polynomial forcing (graded)")
+
+
+    def test_smooth_linear_forcing_convergence(self):
+        """
+        Test:
+            D^beta y = 1 - y,   y(0) = 0
+
+        For beta = 0.5:
+            y(t) = 1 - exp(t) * erfc(sqrt(t))
+
+        Expected graded-mesh rate:
+            p = min(2 * beta * r, 1 + beta)
+
+        The saturation threshold is r = 1.5.
+        """
+
+        beta = 0.5
+        T = 1.0
+        step_size = 0.1
+        y0 = torch.tensor([0.0], dtype=torch.float64)
+        num_refinements = 6
+
+        class LinearForcing:
+            def __call__(self, t, y):
+                return 1.0 - y
+
+        func = LinearForcing()
+
+        # Exact solution for beta = 0.5:
+        # y(T) = 1 - E_{1/2}(-sqrt(T))
+        exact = 1.0 - math.exp(T) * math.erfc(math.sqrt(T))
+
+        prev_err = None
+        prev_err_graded = None
+
+        for i in range(num_refinements):
+            current_step = step_size
+
+            y_T = self._solve(
+                func, y0, beta, T, current_step,
+                graded_time=False
+            )
+
+            y_T_graded = self._solve(
+                func, y0, beta, T, current_step,
+                graded_time=True
+            )
+
+            err = abs(y_T.item() - exact)
+            err_graded = abs(y_T_graded.item() - exact)
+
+            if prev_err is None:
+                print(
+                    f"\nSmooth linear forcing: "
+                    f"h={current_step:.6f}, "
+                    f"err={err:.3e}, "
+                    f"err_graded={err_graded:.3e}"
+                )
+            else:
+                rate = math.log(prev_err / err) / math.log(2.0)
+                rate_graded = math.log(
+                    prev_err_graded / err_graded
+                ) / math.log(2.0)
+
+                print(
+                    f"\nSmooth linear forcing: "
+                    f"h={current_step:.6f}, "
+                    f"err={err:.3e}, rate={rate:.3f}, "
+                    f"err_graded={err_graded:.3e}, "
+                    f"rate_graded={rate_graded:.3f}"
+                )
+
+            prev_err = err
+            prev_err_graded = err_graded
+            step_size /= 2.0
+
+        self.assertLess(
+            err, 0.1,
+            "Forward error too large for smooth linear forcing"
+        )
+        self.assertLess(
+            err_graded, 0.1,
+            "Forward error too large for smooth linear forcing (graded)"
+        )
+
 
     def test_polynomail_forcing_convergence(self):  
         beta = 0.5
