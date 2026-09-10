@@ -105,8 +105,12 @@ class PowerForcing(nn.Module):
         val = self.coeff * (tv ** self.exponent) if tv > 0.0 else 0.0
         return torch.full_like(y, val)
 
-class LinearForcing:
-    def __call__(self, t, y):
+class LinearForcing(nn.Module):
+    """f(t, y) = 1 - y  (used for D^β y = 1 - y with exact solution y(t) = 1 - exp(t)·erfc(sqrt(t)) for β=0.5)."""
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, t, y):
         return 1.0 - y
 
 
