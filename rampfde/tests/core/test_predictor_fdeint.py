@@ -290,10 +290,6 @@ class TestPredictorFDEintForwardCorrectness(unittest.TestCase):
         y0 = torch.tensor([0.0], dtype=torch.float64)
         num_refinements = 6
 
-        class LinearForcing:
-            def __call__(self, t, y):
-                return 1.0 - y
-
         func = LinearForcing()
 
         # Exact solution for beta = 0.5:
