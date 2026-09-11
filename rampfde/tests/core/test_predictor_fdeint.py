@@ -729,7 +729,9 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
         y0_ref = y0.clone().requires_grad_(True)
         out_ref = _reference_predictor(ref_func, y0_ref, self.beta, tspan)
         graded_tspan = _double_graded_tspan(self.T, self.step_size, self.beta)
-        out_ref_graded = _reference_predictor(ref_func, y0_ref, self.beta, graded_tspan, graded_time=True)
+        out_ref_graded = _reference_predictor_corrector(
+            ref_func, y0_ref, self.beta, graded_tspan
+        )
         out_ref.pow(2).mean().backward()
         out_ref_graded.pow(2).mean().backward()
         ref_y0_grad = _grad(y0_ref).detach().clone()
@@ -839,9 +841,7 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
 
         ref_func = deepcopy(base_func)
         y0_ref = y0.clone().requires_grad_(True)
-        out_ref = _reference_predictor(
-            ref_func, y0_ref, beta, tspan, graded_time=True
-        )
+        out_ref = _reference_predictor_corrector(ref_func, y0_ref, beta, tspan)
         out_ref.pow(2).mean().backward()
         ref_y0_grad = _grad(y0_ref).detach().clone()
         ref_param_grads = [_grad(p).detach().clone() for p in ref_func.parameters()]
