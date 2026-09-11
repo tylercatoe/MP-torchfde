@@ -208,9 +208,11 @@ def _predictor_forward_impl(
         graded_time : If True, use a graded time grid and predictor-corrector
 
     Returns:
-        y_T  : Final solution U^{N-1}, shape (*state), dtype dtype_hi
-        yt   : Full y-trajectory buffer, shape (N, *state), dtype dtype_low
-               (saved for backward; NOT the same as the transient f-history)
+        y_T         : Final solution U^{N-1}, shape (*state), dtype dtype_hi
+        yt          : Full corrected y-trajectory buffer, shape (N, *state),
+                      dtype dtype_low
+        predictor_t : Predictor trajectory P_n for graded predictor-corrector,
+                      or None for uniform predictor-only mode
     """
     N = len(tspan)
     if graded_time:
@@ -226,6 +228,11 @@ def _predictor_forward_impl(
     # the computation graph of each f(t_j, U^j).
     yt = torch.empty(N, *y0.shape, dtype=dtype_low, device=device)
     yt[0] = y0.to(dtype_low)
+
+    predictor_t = None
+    if graded_time:
+        predictor_t = torch.empty(N, *y0.shape, dtype=dtype_low, device=device)
+        predictor_t[0] = y0.to(dtype_low)
 
     # f-history: transient low-precision buffer — this is the buffer whose
     # boundedness argument (Σ_j d_{n,j} bounded) makes low precision safe.
@@ -252,6 +259,9 @@ def _predictor_forward_impl(
             y_current = y0_hi + conv_sum
 
         if graded_time:
+            # Save P_{k+1} before replacing it with the corrected state.
+            predictor_t[k + 1] = y_current.to(dtype_low)
+
             # For graded time, we use predictor-corrector 
             with autocast(device_type="cuda", dtype=dtype_low):
                 f_k_plus_1_Pred = func(tspan[k+1], y_current)
@@ -264,7 +274,7 @@ def _predictor_forward_impl(
         yt[k + 1] = y_current.to(dtype_low)
 
     del fhist
-    return y_current, yt
+    return y_current, yt, predictor_t
 
 
 # ============================================================================
@@ -431,6 +441,213 @@ def _predictor_backward_impl(
     return grad_y0, tuple(grad_params)
 
 
+def _predictor_vjp(
+    func: nn.Module,
+    t_value: torch.Tensor,
+    state_value: torch.Tensor,
+    cotangent: torch.Tensor,
+    params: Tuple[torch.Tensor, ...],
+    dtype_hi: torch.dtype,
+    dtype_low: torch.dtype,
+    scale: Optional[float] = None,
+    check_finite: bool = False,
+) -> Tuple[torch.Tensor, Tuple[Optional[torch.Tensor], ...]]:
+    """Evaluate one RHS VJP used by the predictor-corrector adjoint."""
+    state = state_value.to(dtype_hi).detach().requires_grad_(True)
+
+    with torch.enable_grad():
+        with autocast(device_type="cuda", dtype=dtype_low):
+            rhs = func(t_value, state)
+
+        scaled_cotangent = (
+            scale * cotangent if scale is not None else cotangent
+        )
+        if check_finite and _is_any_infinite(scaled_cotangent):
+            raise OverflowError("Non-finite scaled cotangent in predictor-corrector adjoint")
+
+        req_params = tuple(p for p in params if p.requires_grad)
+
+        if not rhs.requires_grad:
+            vjp_state = torch.zeros_like(state)
+            vjp_params = [None] * len(params)
+        elif req_params:
+            vjp_all = torch.autograd.grad(
+                rhs,
+                (state, *req_params),
+                scaled_cotangent.to(rhs.dtype),
+                allow_unused=True,
+                create_graph=False,
+            )
+            vjp_state = vjp_all[0]
+            req_vjp_params = list(vjp_all[1:])
+            vjp_params = []
+            req_index = 0
+            for param in params:
+                if param.requires_grad:
+                    vjp_params.append(req_vjp_params[req_index])
+                    req_index += 1
+                else:
+                    vjp_params.append(None)
+        else:
+            vjp_state = torch.autograd.grad(
+                rhs,
+                state,
+                scaled_cotangent.to(rhs.dtype),
+                allow_unused=True,
+                create_graph=False,
+            )[0]
+            vjp_params = []
+
+    if vjp_state is None:
+        vjp_state = torch.zeros_like(state)
+
+    if scale is not None:
+        inv_scale = 1.0 / scale
+        vjp_state = inv_scale * vjp_state
+        vjp_params = [
+            None if vp is None else inv_scale * vp for vp in vjp_params
+        ]
+
+    if check_finite and _is_any_infinite(vjp_state):
+        raise OverflowError("Non-finite VJP in predictor-corrector adjoint")
+
+    return vjp_state, tuple(vjp_params)
+
+
+def _predictor_corrector_backward_impl(
+    func: nn.Module,
+    at: torch.Tensor,
+    yt: torch.Tensor,
+    predictor_t: torch.Tensor,
+    tspan: torch.Tensor,
+    beta_val: float,
+    params: Tuple[torch.Tensor, ...],
+    dtype_hi: torch.dtype,
+    dtype_low: torch.dtype,
+    scale: Optional[float] = None,
+    check_finite: bool = False,
+    adj_storage_dtype: Optional[torch.dtype] = None,
+) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
+    """Exact discrete adjoint of the graded predictor-corrector recurrence.
+
+    The forward graph for n = 1, ..., N-1 is:
+
+        P_n = y0 + sum_j D[n,j] f_j
+        g_n = f(t_n, P_n)
+        y_n = y0 + sum_j C[n,j] f_j + ell_n g_n
+
+    Here f_j = f(t_j, y_j), while g_n is the RHS evaluated at the
+    predictor state.  This routine transposes both branches of that graph.
+    """
+    N = len(tspan)
+    _adj_dtype = adj_storage_dtype if adj_storage_dtype is not None else dtype_hi
+    device = at.device
+
+    # bar_f[j] is the accumulated cotangent of f(t_j, y_j) from all later
+    # corrected states and predictor states.
+    bar_f = torch.zeros(
+        (N - 1, *at.shape), dtype=_adj_dtype, device=device
+    )
+    grad_params = [torch.zeros_like(p) for p in params]
+    grad_y0 = torch.zeros_like(at, dtype=dtype_hi)
+    bar_y_n = at.to(dtype_hi)  # cotangent of the current corrected state y_n
+
+    def add_param_grads(
+        vjp_params: Tuple[Optional[torch.Tensor], ...],
+    ) -> None:
+        for g, vp in zip(grad_params, vjp_params):
+            if vp is not None:
+                g.add_(vp.to(g.dtype))
+
+    def add_bar_f(index: int, coefficient: torch.Tensor, value: torch.Tensor) -> None:
+        bar_f[index].add_(
+            value.to(_adj_dtype), alpha=float(coefficient.detach().item())
+        )
+
+    C = 1.0 / math.gamma(beta_val + 1.0)
+
+    # Process corrected states in reverse topological order.  At the start of
+    # each iteration bar_y_n already contains all future dependence on y_n.
+    for n in range(N - 1, 0, -1):
+        # y_n has a direct additive dependence on y0.
+        grad_y0 = grad_y0 + bar_y_n
+
+        k = n - 1
+        A_weights, B_weights = _corrector_weights(
+            k, beta_val, dtype_hi, device, tspan=tspan
+        )
+
+        # Transpose the corrected-history terms:
+        #   sum_{i=0}^{n-2} A_i f_i + B_i f_{i+1}
+        for i in range(n - 1):
+            add_bar_f(i, A_weights[i], bar_y_n)
+            add_bar_f(i + 1, B_weights[i], bar_y_n)
+
+        # Transpose the local corrector term beta * ell_n * f_{n-1}.
+        ell_n = torch.pow(tspan[n] - tspan[n - 1], beta_val) / math.gamma(
+            beta_val + 2.0
+        )
+        add_bar_f(n - 1, beta_val * ell_n, bar_y_n)
+
+        # Transpose g_n = f(t_n, P_n).
+        bar_g_n = ell_n * bar_y_n
+        bar_P_n, g_param_grads = _predictor_vjp(
+            func,
+            tspan[n],
+            predictor_t[n],
+            bar_g_n,
+            params,
+            dtype_hi,
+            dtype_low,
+            scale=scale,
+            check_finite=check_finite,
+        )
+        add_param_grads(g_param_grads)
+
+        # P_n has a direct additive dependence on y0.
+        grad_y0 = grad_y0 + bar_P_n
+
+        # Transpose P_n = y0 + sum_j D[n,j] f_j.
+        predictor_weights = _predictor_weights(
+            k,
+            beta_val,
+            C,
+            dtype_hi,
+            device,
+            graded_time=True,
+            tspan=tspan,
+        )
+        for j in range(n):
+            add_bar_f(j, predictor_weights[j], bar_P_n)
+
+        # f_{n-1} = f(t_{n-1}, y_{n-1}) is now fully accumulated: all of its
+        # uses occur in y_n or in predictor states P_m with m >= n.
+        f_state_bar = bar_f[n - 1].to(dtype_hi)
+        y_bar, f_param_grads = _predictor_vjp(
+            func,
+            tspan[n - 1],
+            yt[n - 1],
+            f_state_bar,
+            params,
+            dtype_hi,
+            dtype_low,
+            scale=scale,
+            check_finite=check_finite,
+        )
+        add_param_grads(f_param_grads)
+
+        if n == 1:
+            # y_0 is the input to f_0, not a separately produced state.
+            grad_y0 = grad_y0 + y_bar
+        else:
+            bar_y_n = y_bar
+
+    if check_finite and _is_any_infinite(grad_y0):
+        raise OverflowError("Non-finite grad_y0 in predictor-corrector adjoint")
+
+    return grad_y0, tuple(grad_params)
+
+
 # ============================================================================
 # Base solver class — shared forward pass
 # ============================================================================
@@ -467,11 +684,14 @@ class PredictorFDESolverBase(torch.autograd.Function):
                 if torch.is_autocast_enabled()
                 else dtype_hi
             )
-            y_T, yt = _predictor_forward_impl(
+            y_T, yt, predictor_t = _predictor_forward_impl(
                 func, y0, tspan, beta_val, dtype_hi, dtype_low, graded_time=graded_time
             )
 
-        ctx.save_for_backward(yt, *params)
+        if graded_time:
+            ctx.save_for_backward(yt, predictor_t, *params)
+        else:
+            ctx.save_for_backward(yt, *params)
         ctx.func = func
         ctx.tspan = tspan
         ctx.beta_val = beta_val
@@ -499,7 +719,10 @@ class PredictorFDESolverUnscaled(PredictorFDESolverBase):
     def backward(
         ctx: Any, at: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], ...]:
-        yt, *params = ctx.saved_tensors
+        if ctx.graded_time:
+            yt, predictor_t, *params = ctx.saved_tensors
+        else:
+            yt, *params = ctx.saved_tensors
         params = tuple(params)
         dtype_hi = ctx.dtype_hi
         dtype_low = (
@@ -509,13 +732,21 @@ class PredictorFDESolverUnscaled(PredictorFDESolverBase):
         )
 
         with torch.no_grad():
-            grad_y0, grad_params = _predictor_backward_impl(
-                ctx.func, at, yt, ctx.tspan, ctx.beta_val,
-                params, dtype_hi, dtype_low,
-                scale=None, check_finite=False,
-                adj_storage_dtype=ctx.adj_storage_dtype,
-                graded_time=ctx.graded_time,
-            )
+            if ctx.graded_time:
+                grad_y0, grad_params = _predictor_corrector_backward_impl(
+                    ctx.func, at, yt, predictor_t, ctx.tspan, ctx.beta_val,
+                    params, dtype_hi, dtype_low,
+                    scale=None, check_finite=False,
+                    adj_storage_dtype=ctx.adj_storage_dtype,
+                )
+            else:
+                grad_y0, grad_params = _predictor_backward_impl(
+                    ctx.func, at, yt, ctx.tspan, ctx.beta_val,
+                    params, dtype_hi, dtype_low,
+                    scale=None, check_finite=False,
+                    adj_storage_dtype=ctx.adj_storage_dtype,
+                    graded_time=False,
+                )
 
         # Signature: (func, y0, tspan, beta_val, adj_storage_dtype, loss_scaler, *params)
         return (None, grad_y0, None, None, None, None, None, *grad_params)
@@ -539,7 +770,10 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
     def backward(
         ctx: Any, at: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], ...]:
-        yt, *params = ctx.saved_tensors
+        if ctx.graded_time:
+            yt, predictor_t, *params = ctx.saved_tensors
+        else:
+            yt, *params = ctx.saved_tensors
         params = tuple(params)
         dtype_hi = ctx.dtype_hi
         dtype_low = (
@@ -561,13 +795,21 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
             while attempts < scaler.max_attempts:
                 try:
                     with torch.no_grad():
-                        grad_y0, grad_params = _predictor_backward_impl(
-                            ctx.func, at, yt, ctx.tspan, ctx.beta_val,
-                            params, dtype_hi, dtype_low,
-                            scale=scaler.S, check_finite=True,
-                            adj_storage_dtype=ctx.adj_storage_dtype,
-                            graded_time=ctx.graded_time
-                        )
+                        if ctx.graded_time:
+                            grad_y0, grad_params = _predictor_corrector_backward_impl(
+                                ctx.func, at, yt, predictor_t, ctx.tspan, ctx.beta_val,
+                                params, dtype_hi, dtype_low,
+                                scale=scaler.S, check_finite=True,
+                                adj_storage_dtype=ctx.adj_storage_dtype,
+                            )
+                        else:
+                            grad_y0, grad_params = _predictor_backward_impl(
+                                ctx.func, at, yt, ctx.tspan, ctx.beta_val,
+                                params, dtype_hi, dtype_low,
+                                scale=scaler.S, check_finite=True,
+                                adj_storage_dtype=ctx.adj_storage_dtype,
+                                graded_time=False,
+                            )
                     if _is_any_infinite((grad_y0, *grad_params)):
                         raise OverflowError("Non-finite gradients after adjoint solve.")
                     break
@@ -606,7 +848,10 @@ class PredictorFDESolverUnscaledSafe(PredictorFDESolverBase):
     def backward(
         ctx: Any, at: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], ...]:
-        yt, *params = ctx.saved_tensors
+        if ctx.graded_time:
+            yt, predictor_t, *params = ctx.saved_tensors
+        else:
+            yt, *params = ctx.saved_tensors
         params = tuple(params)
         dtype_hi = ctx.dtype_hi
         dtype_low = (
@@ -617,13 +862,21 @@ class PredictorFDESolverUnscaledSafe(PredictorFDESolverBase):
 
         try:
             with torch.no_grad():
-                grad_y0, grad_params = _predictor_backward_impl(
-                    ctx.func, at, yt, ctx.tspan, ctx.beta_val,
-                    params, dtype_hi, dtype_low,
-                    scale=None, check_finite=True,
-                    adj_storage_dtype=ctx.adj_storage_dtype,
-                    graded_time=ctx.graded_time
-                )
+                if ctx.graded_time:
+                    grad_y0, grad_params = _predictor_corrector_backward_impl(
+                        ctx.func, at, yt, predictor_t, ctx.tspan, ctx.beta_val,
+                        params, dtype_hi, dtype_low,
+                        scale=None, check_finite=True,
+                        adj_storage_dtype=ctx.adj_storage_dtype,
+                    )
+                else:
+                    grad_y0, grad_params = _predictor_backward_impl(
+                        ctx.func, at, yt, ctx.tspan, ctx.beta_val,
+                        params, dtype_hi, dtype_low,
+                        scale=None, check_finite=True,
+                        adj_storage_dtype=ctx.adj_storage_dtype,
+                        graded_time=False,
+                    )
             if _is_any_infinite((grad_y0, *grad_params)):
                 raise OverflowError("Non-finite gradients after adjoint solve.")
         except OverflowError:

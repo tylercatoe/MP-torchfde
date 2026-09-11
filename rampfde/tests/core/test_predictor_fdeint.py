@@ -190,6 +190,71 @@ def _reference_predictor(func: nn.Module, y0: torch.Tensor, beta_val: float, tsp
     return y_current
 
 
+def _reference_predictor_corrector(
+    func: nn.Module,
+    y0: torch.Tensor,
+    beta_val: float,
+    tspan: torch.Tensor,
+) -> torch.Tensor:
+    """Plain-autograd reference for the graded predictor-corrector scheme."""
+    N = len(tspan)
+    dtype = y0.dtype
+    device = y0.device
+    C = 1.0 / math.gamma(beta_val + 1.0)
+    fhist = []
+    y_current = y0
+
+    for k in range(N - 1):
+        f_k = func(tspan[k], y_current)
+        fhist.append(f_k)
+
+        t_next = tspan[k + 1]
+        predictor_weights = C * (
+            torch.pow(t_next - tspan[: k + 1], beta_val)
+            - torch.pow(t_next - tspan[1: k + 2], beta_val)
+        )
+        f_stack = torch.stack(fhist)
+        view = (-1,) + (1,) * (f_stack.ndim - 1)
+        predictor = y0 + (predictor_weights.view(view) * f_stack).sum(0)
+        f_pred = func(t_next, predictor)
+
+        if k == 0:
+            conv_corrector = torch.zeros_like(y0)
+        else:
+            t_left = tspan[:k]
+            t_right = tspan[1:k + 1]
+            h_i = t_right - t_left
+            x_left = t_next - t_left
+            x_right = t_next - t_right
+            gamma_beta = math.gamma(beta_val)
+            I0 = (
+                torch.pow(x_left, beta_val)
+                - torch.pow(x_right, beta_val)
+            ) / beta_val
+            I1 = (
+                torch.pow(x_left, beta_val + 1.0)
+                - torch.pow(x_right, beta_val + 1.0)
+            ) / (beta_val + 1.0)
+            A = (I1 - x_right * I0) / (h_i * gamma_beta)
+            B = (x_left * I0 - I1) / (h_i * gamma_beta)
+            old_f = torch.stack(fhist[:k])
+            old_f_view = (-1,) + (1,) * (old_f.ndim - 1)
+            right_f = torch.stack(fhist[1:k + 1])
+            conv_corrector = (
+                (A.view(old_f_view) * old_f).sum(0)
+                + (B.view(old_f_view) * right_f).sum(0)
+            )
+
+        local = (
+            torch.pow(t_next - tspan[k], beta_val)
+            / math.gamma(beta_val + 2.0)
+            * (beta_val * f_k + f_pred)
+        )
+        y_current = y0 + conv_corrector + local
+
+    return y_current
+
+
 def _double_graded_tspan(T: float, step_size: float, beta_val: float) -> torch.Tensor:
     """Build the same symmetric two-sided graded mesh as predictor_fdeint."""
     N = int(round(T / step_size)) + 1
@@ -666,7 +731,7 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
         graded_tspan = _double_graded_tspan(self.T, self.step_size, self.beta)
         out_ref_graded = _reference_predictor(ref_func, y0_ref, self.beta, graded_tspan, graded_time=True)
         out_ref.pow(2).mean().backward()
-        out_ref_graded.pow(2).mean().backward()
+       # out_ref_graded.pow(2).mean().backward()
         ref_y0_grad = _grad(y0_ref).detach().clone()
         ref_param_grads = [_grad(p).detach().clone() for p in ref_func.parameters()]
 
@@ -676,7 +741,7 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
         out_adj = predictor_fdeint(adj_func, y0_adj, beta=self.beta, t=self.T, step_size=self.step_size)
         out_adj_graded = predictor_fdeint(adj_func, y0_adj, beta=self.beta, t=self.T, step_size=self.step_size, graded_time=True)
         out_adj.pow(2).mean().backward()
-        out_adj_graded.pow(2).mean().backward()
+        # out_adj_graded.pow(2).mean().backward()
         adj_y0_grad = _grad(y0_adj).detach().clone()
         adj_param_grads = [_grad(p).detach().clone() for p in adj_func.parameters()]
 
@@ -707,6 +772,59 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
             self.assertLess(rel_err.item(), 1e-3,
                              f"Param[{i}] gradient mismatch between adjoint and reference "
                              f"(expected tight match — backward is the exact discrete adjoint)")
+
+    def test_graded_predictor_corrector_adjoint_matches_reference(self):
+        """Graded predictor-corrector gradients match plain autograd."""
+        beta = 0.6
+        T = 0.4
+        step_size = 0.1
+        dim = 3
+        tspan = _double_graded_tspan(T, step_size, beta)
+
+        torch.manual_seed(self.seed)
+        base_func = SmallMLP(dim=dim, dtype=torch.float64, seed=self.seed)
+        y0 = torch.randn(dim, dtype=torch.float64)
+
+        ref_func = deepcopy(base_func)
+        y0_ref = y0.clone().requires_grad_(True)
+        out_ref = _reference_predictor_corrector(
+            ref_func, y0_ref, beta, tspan
+        )
+        out_ref.pow(2).mean().backward()
+        ref_y0_grad = _grad(y0_ref).detach().clone()
+        ref_param_grads = [
+            _grad(p).detach().clone() for p in ref_func.parameters()
+        ]
+
+        adj_func = deepcopy(base_func)
+        y0_adj = y0.clone().requires_grad_(True)
+        out_adj = predictor_fdeint(
+            adj_func,
+            y0_adj,
+            beta=beta,
+            t=T,
+            step_size=step_size,
+            graded_time=True,
+        )
+        out_adj.pow(2).mean().backward()
+        adj_y0_grad = _grad(y0_adj).detach().clone()
+        adj_param_grads = [
+            _grad(p).detach().clone() for p in adj_func.parameters()
+        ]
+
+        self.assertTrue(
+            torch.allclose(out_ref, out_adj, rtol=1e-5, atol=1e-6),
+            f"Forward mismatch: ref={out_ref} adj={out_adj}",
+        )
+        self.assertTrue(
+            torch.allclose(ref_y0_grad, adj_y0_grad, rtol=1e-5, atol=1e-6),
+            f"y0 gradient mismatch: ref={ref_y0_grad} adj={adj_y0_grad}",
+        )
+        for g_ref, g_adj in zip(ref_param_grads, adj_param_grads):
+            self.assertTrue(
+                torch.allclose(g_ref, g_adj, rtol=1e-5, atol=1e-6),
+                "Parameter gradient mismatch for graded predictor-corrector",
+            )
 
     # def test_graded_mesh_adjoint_matches_reference(self):
     #     """The custom graded-mesh forward/backward matches plain autograd."""
