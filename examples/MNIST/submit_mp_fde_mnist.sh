@@ -47,12 +47,6 @@ job_adjmix_bf16=$(sbatch --parsable --job-name=mp-mnist-adjmix-bf16 \
   "$sbatch_script")
 echo "  job_id=$job_adjmix_bf16"
 
-echo "Submitting direct-graded..."
-job_graded_direct=$(sbatch --parsable --job-name=mp-mnist-graded-direct \
-  --export=ALL,MODE=direct,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-direct",GRADED_TIME=True \
-  "$sbatch_script")
-echo "  job_id=$job_graded_direct"  
-
 echo "Submitting adjoint-graded..."
 job_graded_adj=$(sbatch --parsable --job-name=mp-mnist-graded-adj \
   --export=ALL,MODE=adjoint,DTYPE_HI=float32,MP_DTYPE=float32,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint",GRADED_TIME=True \
@@ -71,4 +65,4 @@ job_graded_adjmix_bf16=$(sbatch --parsable --job-name=mp-mnist-graded-adjmix-bf1
   "$sbatch_script")
 echo "  job_id=$job_graded_adjmix_bf16"
 
-echo "Submitted 8 jobs in parallel."
+echo "Submitted 7 jobs in parallel."
