@@ -12,7 +12,7 @@ NOISE="${NOISE:-0.05}"
 LR="${LR:-0.01}"
 SEED="${SEED:-42}"
 GPU="${GPU:-0}"
-ENV_NAME="${ENV_NAME:-implicit-oc}"
+ENV_NAME="${ENV_NAME:-torch28}"
 
 if command -v conda >/dev/null 2>&1; then
     PYTHON_CMD=(conda run --no-capture-output -n "$ENV_NAME" python)
@@ -33,21 +33,24 @@ common_args=(
 )
 
 echo "=== Lotka--Volterra uniform/graded predictor-corrector experiment ==="
-echo "niters=$NITERS n_train=$NTRAIN n_val=$NVAL noise=$NOISE lr=$LR seed=$SEED"
+echo "niters=$NITERS n_train=$NTRAIN n_val=$NVAL noise=$NOISE lr=$LR seed=$SEED env=$ENV_NAME"
 
-for precision in fp32 fp16; do
-    for mesh in uniform graded; do
-        output="results/${mesh}_${precision}"
-        echo "--- mesh=$mesh precision=$precision ---"
-        "${PYTHON_CMD[@]}" train_lotka_volterra.py \
-            --mesh "$mesh" \
-            --precision "$precision" \
-            "${common_args[@]}" \
-            --save "$output"
+for init_regime in near_true worse; do
+    for precision in fp32 fp16; do
+        for mesh in uniform graded; do
+            output="results/${init_regime}/${mesh}_${precision}"
+            echo "--- init=$init_regime mesh=$mesh precision=$precision ---"
+            "${PYTHON_CMD[@]}" train_lotka_volterra.py \
+                --init-regime "$init_regime" \
+                --mesh "$mesh" \
+                --precision "$precision" \
+                "${common_args[@]}" \
+                --save "$output"
+        done
     done
 done
 
 echo "=== Runs complete; creating comparison files ==="
 "${PYTHON_CMD[@]}" compare_results.py \
     --output-dir results \
-    results/*/results.json
+    results/*/*/results.json

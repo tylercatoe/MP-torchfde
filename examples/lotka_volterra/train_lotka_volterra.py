@@ -47,6 +47,11 @@ T_END = 5.0
 STEP_SIZE = 0.1
 DATA_STEP_SIZE = 0.02
 
+INITIALIZATIONS = {
+    "near_true": torch.tensor([0.99, 0.48, 1.05, 0.33], dtype=torch.float32),
+    "worse": torch.tensor([0.65, 0.75, 1.35, 0.18], dtype=torch.float32),
+}
+
 
 def lotka_volterra_rhs(params: torch.Tensor, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """Right-hand side of the fractional Lotka--Volterra system."""
@@ -60,9 +65,14 @@ def lotka_volterra_rhs(params: torch.Tensor, t: torch.Tensor, y: torch.Tensor) -
 class LotkaVolterraFunc(nn.Module):
     """Learnable positive Lotka--Volterra parameters."""
 
-    def __init__(self) -> None:
+    def __init__(self, init_regime: str) -> None:
         super().__init__()
-        init = torch.tensor([0.99, 0.48, 1.05, 0.33], dtype=torch.float32)
+        if init_regime not in INITIALIZATIONS:
+            raise ValueError(
+                f"Unknown initialization regime {init_regime!r}; "
+                f"choose from {sorted(INITIALIZATIONS)}"
+            )
+        init = INITIALIZATIONS[init_regime]
         self.log_params = nn.Parameter(torch.log(init))
 
     @property
@@ -188,13 +198,14 @@ def train(args: argparse.Namespace) -> Dict:
     y0_train, target_train, y0_val, target_val = generate_data(args, device)
 
     torch.manual_seed(args.seed)
-    model = LotkaVolterraFunc().to(device)
+    model = LotkaVolterraFunc(args.init_regime).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.MSELoss()
     true_params = TRUE_PARAMS.to(device)
 
     results = {
         "experiment": "lotka_volterra_mesh_comparison",
+        "init_regime": args.init_regime,
         "mesh": args.mesh,
         "precision": args.precision,
         "beta": args.beta,
@@ -207,6 +218,7 @@ def train(args: argparse.Namespace) -> Dict:
         "learning_rate": args.lr,
         "seed": args.seed,
         "true_params": TRUE_PARAMS.tolist(),
+        "initialization_params": INITIALIZATIONS[args.init_regime].tolist(),
         "initial_params": model.params.detach().cpu().tolist(),
         "data_checksums": {
             "y0_sum": float((y0_train.sum() + y0_val.sum()).item()),
@@ -279,6 +291,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--mesh", choices=["uniform", "graded"], required=True)
     parser.add_argument("--precision", choices=["fp32", "fp16"], required=True)
+    parser.add_argument(
+        "--init-regime",
+        choices=sorted(INITIALIZATIONS),
+        default="near_true",
+        help="Initial parameter regime used for optimization",
+    )
     parser.add_argument("--niters", type=int, default=500)
     parser.add_argument("--log_freq", type=int, default=25)
     parser.add_argument("--n_train", type=int, default=50)

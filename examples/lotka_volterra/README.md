@@ -9,9 +9,10 @@ D^β y = -y (b - d x)
 ```
 
 It compares a uniform mesh with the double-graded mesh, in both FP32 and
-FP16. All four runs use the same predictor--corrector recurrence, optimizer,
-initial parameter values, beta, data, and train/validation split. The only
-experimental factors are mesh and precision.
+FP16, from two parameter initializations: `near_true` and `worse`. Within each
+initialization regime, all four runs use the same predictor--corrector
+recurrence, optimizer, beta, data, and train/validation split. The experimental
+factors are initialization, mesh, and precision.
 
 The synthetic targets are generated once per run from the same seeded initial
 conditions using a finer uniform predictor--corrector solve, then independent
@@ -32,20 +33,36 @@ NITERS=10 LOG_FREQ=5 ./run_experiment.sh
 ./run_experiment.sh
 ```
 
-The launcher runs:
+The launcher runs eight cases:
 
 ```text
-uniform_fp32, graded_fp32, uniform_fp16, graded_fp16
+near_true/uniform_fp32
+near_true/graded_fp32
+near_true/uniform_fp16
+near_true/graded_fp16
+worse/uniform_fp32
+worse/graded_fp32
+worse/uniform_fp16
+worse/graded_fp16
 ```
 
-Results are stored in `results/<mesh>_<precision>/results.json`. The launcher
-also creates:
+The `near_true` initialization is `[0.99, 0.48, 1.05, 0.33]`; the `worse`
+initialization is `[0.65, 0.75, 1.35, 0.18]`. The true parameters are
+`[1.0, 0.5, 1.0, 0.3]`.
+
+Results are stored in `results/<init_regime>/<mesh>_<precision>/results.json`.
+The launcher also creates:
 
 - `results/comparison.csv`, which is convenient for pandas or custom plots;
 - `results/comparison.md`, a compact summary table.
+- `results/validation_loss_vs_iteration.png`, faceted convergence curves;
+- `results/validation_loss_vs_time.png`, the same curves against estimated
+  elapsed time;
+- `results/accuracy_cost_tradeoff.png`, best validation loss versus runtime and
+  peak GPU memory.
 
-The launcher uses the `implicit-oc` conda environment by default. Override it
-with `ENV_NAME=your_environment`. If `conda` is unavailable but the desired
+The launcher uses the `torch28` conda environment by default. Override it with
+`ENV_NAME=your_environment`. If `conda` is unavailable but the desired
 environment is already active, it falls back to `python`.
 
 Useful overrides include:
@@ -57,14 +74,16 @@ NITERS=1000 NTRAIN=100 NVAL=50 GPU=1 ./run_experiment.sh
 To regenerate the comparison files later:
 
 ```bash
-python compare_results.py --output-dir results results/*/results.json
+python compare_results.py --output-dir results results/*/*/results.json
 ```
 
 ## Interpretation
 
 `final_val_loss` and `best_val_loss` measure trajectory prediction on held-out
 initial conditions. `final_param_err` measures mean absolute error from the
-known parameters `[1.0, 0.5, 1.0, 0.3]`. `peak_mem_mb` is the maximum allocated
-GPU memory recorded during a training iteration, and the logged iteration time
-is a rough runtime comparison. Since the fractional solve is full-batch,
-iterations are the natural training-step unit rather than data epochs.
+known parameters `[1.0, 0.5, 1.0, 0.3]`. Comparing `near_true` with `worse`
+shows whether mesh or precision effects depend on optimization difficulty.
+`peak_mem_mb` is the maximum allocated GPU memory recorded during a training
+iteration, and the logged iteration time is a rough runtime comparison. Since
+the fractional solve is full-batch, iterations are the natural training-step
+unit rather than data epochs.
