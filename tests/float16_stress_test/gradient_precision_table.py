@@ -233,7 +233,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lam", type=float, default=1.0)
     parser.add_argument("--y0", type=float, default=1.0)
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--output-dir", default="gradient_precision_results")
+    parser.add_argument("--output-dir", default="tests/gradient_precision_results")
     return parser.parse_args()
 
 
