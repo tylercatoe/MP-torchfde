@@ -43,6 +43,7 @@ T_FINAL="${T_FINAL:-20.0}"
 STEP_SIZE="${STEP_SIZE:-0.1}"
 MEMORY="${MEMORY:--1}"
 DATA_AUG="${DATA_AUG:-0}"
+GRADED_TIME="${GRADED_TIME:-0}"
 
 ENV_PATH="${HOME}/.conda/envs/${ENV_NAME}"
 if [ -d "${ENV_PATH}/lib" ]; then
@@ -107,4 +108,5 @@ conda run -n "$ENV_NAME" python -u "$driver_script" \
   --width "$WIDTH" \
   --seed "$SEED" \
   --gpu 0 \
+  --graded_time "$GRADED_TIME" \
   $data_aug_arg

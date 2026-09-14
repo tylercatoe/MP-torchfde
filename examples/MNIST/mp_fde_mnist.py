@@ -68,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--step_size", type=float, default=0.1, help="FDE integration step size")
     parser.add_argument("--memory", type=int, default=-1, help="Memory for FDE adjoint (-1 for full)")
     parser.add_argument("--return_history", action="store_true", help="Return full state history from FDE solver")
+    parser.add_argument("--graded_time", action='store_true', help="Use graded time steps for FDE integration")
 
     # Multi-term FDE parameters
     parser.add_argument("--multi_beta", type=float, nargs="+", default=None, help="Fractional orders for multi-term FDE")
@@ -104,6 +105,7 @@ class FDEConfig:
     return_history: bool = False
     dtype_hi: Optional[torch.dtype] = torch.float32
     mp_dtype: Optional[torch.dtype] = None
+    graded_time: bool = False
 
     # Multi-term FDE settings
     multi_beta: Optional[List[float]] = None
@@ -118,6 +120,7 @@ class ModeConfig:
     dtype_hi: Optional[torch.dtype] = torch.float32
     mp_dtype: Optional[torch.dtype] = None
     loss_scaler: Any = False
+    graded_time: bool = False
 
 def dtype_from_name(name: str) -> torch.dtype:
     if name == "float16":
@@ -189,6 +192,7 @@ class FDEBlock(nn.Module):
             "return_history": cfg.return_history,
             "dtype_hi": cfg.dtype_hi,
             "mp_dtype": cfg.mp_dtype,
+            "graded_time": cfg.graded_time,
         }
 
         beta = torch.tensor(cfg.beta, device=x.device, dtype=cfg.dtype_hi)
@@ -366,6 +370,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             dtype_hi=dtype_hi,
             mp_dtype=None,
             loss_scaler=False,
+            graded_time=args.graded_time
         )
     elif mode == "adjoint":
         return ModeConfig(
@@ -375,6 +380,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             dtype_hi=dtype_hi,
             mp_dtype=None,
             loss_scaler=False,
+            graded_time=args.graded_time
         )
     elif mode == "adjoint-mixed":
         scaler: Any = False
@@ -390,6 +396,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             dtype_hi=dtype_hi,
             mp_dtype=mp_dtype,
             loss_scaler=scaler,
+            graded_time=args.graded_time
         )
         
     elif mode == "adjoint-mixed-bfloat":
@@ -400,6 +407,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             dtype_hi=dtype_hi,
             mp_dtype=mp_dtype,
             loss_scaler=False, 
+            graded_time=args.graded_time
         )
     else:
         raise ValueError(f"Invalid mode '{mode}'.")
@@ -416,7 +424,8 @@ def build_solver(mode_config: ModeConfig):
                     t=t,
                     step_size=step_size,
                     loss_scaler=mode_config.loss_scaler,
-                    adj_dtype=mode_config.mp_dtype
+                    adj_dtype=mode_config.mp_dtype,
+                    graded_time=mode_config.graded_time
                 )
             return solver
         else: 
@@ -430,6 +439,7 @@ def build_solver(mode_config: ModeConfig):
                     step_size=step_size,
                     method=method,
                     options=options,
+                    adj_dtype=mode_config.mp_dtype,
                     loss_scaler=mode_config.loss_scaler,
                 )
             return solver
@@ -494,6 +504,7 @@ if __name__ == "__main__":
         return_history=args.return_history,
         dtype_hi= dtype_from_name(args.dtype_hi),
         mp_dtype= dtype_from_name(args.mp_dtype),
+        graded_time=args.graded_time
     )
 
     if mode_cfg.use_adjoint:
@@ -699,14 +710,3 @@ if __name__ == "__main__":
         f"Infer Time {inference_time_s:.2f}s |"
         f"Infer Peak Mem {inference_peak_mem_mb:.2f} MB | "
     )
-
-    # return {
-    #     "mode": mode_cfg.name,
-    #     "final_val_error": float(1.0 - acc),
-    #     "best_val_error": float(1.0 - best_acc),
-    #     "final_val_acc": float(acc),
-    #     "train_gpu_memory_mb": float(train_peak_mem_mb),
-    #     "train_time_s": float(train_time_s),
-    #     "inference_gpu_memory_mb": float(inference_peak_mem_mb),
-    #     "inference_time_s": float(inference_time_s),
-    # }
