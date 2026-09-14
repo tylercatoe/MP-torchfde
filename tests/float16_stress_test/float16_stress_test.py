@@ -87,7 +87,7 @@ def test_lower_range(dtype: torch.dtype = torch.float16, T: float = 8.0, step_si
 
     return ys
 
-def upper_analytical(T, step_size, y0, beta, lam):
+def upper_analytical(T, step_size):
     """
     Analytical solution for the upper range test.
     """
