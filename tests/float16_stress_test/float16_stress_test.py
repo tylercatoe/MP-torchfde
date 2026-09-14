@@ -64,10 +64,10 @@ def test_upper_range(dtype: torch.dtype = torch.float16, T: float = 8.0, step_si
     Test the upper range of the FDE solver for float16.
     """
 
-    y0 = torch.tensor([65504.0 / 200.0], dtype=torch.float32)
+    y0 = torch.tensor([50000.0], dtype=torch.float32)
     beta = torch.tensor([0.7], dtype=torch.float32)
     T = torch.tensor([T], dtype=torch.float32)
-    lam = 199.0
+    lam = 1.0
 
     ys = march_trajectory(y0, beta, T, step_size, lam, dtype=dtype)
 
@@ -78,10 +78,10 @@ def test_lower_range(dtype: torch.dtype = torch.float16, T: float = 8.0, step_si
     Test the lower range of the FDE solver for float16.
     """
 
-    y0 = torch.tensor([1.0], dtype=torch.float32)
+    y0 = torch.tensor([.010], dtype=torch.float32)
     beta = torch.tensor([0.9], dtype=torch.float32)
     T = torch.tensor([T], dtype=torch.float32)
-    lam = 199.0
+    lam = 1.0
 
     ys = march_trajectory(y0, beta, T, step_size, lam, dtype=dtype)
 
@@ -129,15 +129,26 @@ def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln,
 
     plt.figure(figsize=(12, 6))
 
-    plt.plot(tspan, to_numpy(upper_ys), label='UR Numerical Solution', color='blue')
-    plt.plot(tspan, analytical_upper_soln, label='UR Analytical', color='black', linestyle='dashed')
-    plt.plot(tspan, abs(upper_derv), label='UR Derivative', color='orange')
-    plt.plot(tspan, to_numpy(lower_ys), label='LR Numerical Solution', color='green')
-    plt.plot(tspan, analytical_lower_soln, label='LR Analytical', color='black', linestyle='dashed')
-    plt.plot(tspan, abs(lower_derv), label='LR Derivative', color='red')
+    plt.subplot(1, 2, 1)
+    plt.plot(tspan, to_numpy(upper_ys), label='Numerical Soln', color='blue')
+    plt.plot(tspan, analytical_upper_soln, label='Analytical Soln', color='black', linestyle='dashed')
+    plt.plot(tspan, abs(upper_derv), label='Derivative', color='orange')
     plt.plot(tspan, np.full_like(tspan, 65504.0), label='Float16 Max', color='purple', linestyle='dotted')
     plt.plot(tspan, np.full_like(tspan, 6.1e-5), label='Float16 Min', color='brown', linestyle='dotted')
-    plt.title('FDE Solution and Derivative Ranges')
+    plt.title('FDE Solution and Derivative Upper Ranges')
+    plt.xlabel('t')
+    plt.ylabel('Value')
+    plt.yscale('log')
+    plt.legend()
+    plt.grid()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(tspan, to_numpy(lower_ys), label='Numerical Soln', color='green')
+    plt.plot(tspan, analytical_lower_soln, label='Analytical Soln', color='black', linestyle='dashed')
+    plt.plot(tspan, abs(lower_derv), label='Derivative', color='red')
+    plt.plot(tspan, np.full_like(tspan, 65504.0), label='Float16 Max', color='purple', linestyle='dotted')
+    plt.plot(tspan, np.full_like(tspan, 6.1e-5), label='Float16 Min', color='brown', linestyle='dotted')
+    plt.title('FDE Solution and Derivative Lower Ranges')
     plt.xlabel('t')
     plt.ylabel('Value')
     plt.yscale('log')
