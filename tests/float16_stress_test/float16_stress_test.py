@@ -109,7 +109,7 @@ def upper_analytical():
     T = 20.0
     lam = 199.0
 
-    tspan = torch.linspace(0.0, T, int(round(T / 0.1)) + 1, dtype=torch.float32)
+    tspan = np.linspace(0.0, T, int(round(T / 0.1)) + 1)
     analytical_solution = y0 * mittag_leffler(-lam * tspan**beta, beta, 1)
 
     analytical_deiv = -lam * analytical_solution
@@ -125,7 +125,7 @@ def lower_analytical():
     T = 20.0
     lam = 199.0
 
-    tspan = torch.linspace(0.0, T, int(round(T / 0.1)) + 1, dtype=torch.float32)
+    tspan = np.linspace(0.0, T, int(round(T / 0.1)) + 1)
     analytical_solution = y0 * mittag_leffler(-lam * tspan**beta, beta, 1)
 
     analytical_deiv = -lam * analytical_solution
