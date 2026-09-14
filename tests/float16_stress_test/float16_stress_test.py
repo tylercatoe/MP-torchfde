@@ -122,10 +122,10 @@ def lower_analytical(T, step_size):
 def to_numpy(x):
     return x.detach().float().cpu().numpy()
 
-def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln, analytical_lower_soln):
+def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln, analytical_lower_soln, T, step_size):
     import matplotlib.pyplot as plt
 
-    tspan = np.linspace(0.0, 8.0, int(round(8.0 / 0.01)) + 1)
+    tspan = np.linspace(0.0, T, int(round(T / step_size)) + 1)
 
     plt.figure(figsize=(12, 6))
 
@@ -178,5 +178,5 @@ if __name__ == "__main__":
     analytical_upper_soln, analytical_upper_derv = upper_analytical(T=T, step_size=step_size)
     analytical_lower_soln, analytical_lower_derv = lower_analytical(T=T, step_size=step_size)
 
-    make_plot(upper_ys, analytical_upper_derv, lower_ys, analytical_lower_derv, analytical_upper_soln, analytical_lower_soln)
+    make_plot(upper_ys, analytical_upper_derv, lower_ys, analytical_lower_derv, analytical_upper_soln, analytical_lower_soln, T, step_size)
     
