@@ -86,8 +86,10 @@ def reference_predictor(
 
 
 def relative_error(value: torch.Tensor, reference: torch.Tensor) -> float:
-    value = value.detach().to(torch.float64)
-    reference = reference.detach().to(torch.float64)
+    # The numerical run is on CUDA while the independent reference is on CPU.
+    # Compare them in one device and in float64.
+    value = value.detach().to(device="cpu", dtype=torch.float64)
+    reference = reference.detach().to(device="cpu", dtype=torch.float64)
     denominator = torch.linalg.norm(reference).clamp_min(1e-30)
     return float((torch.linalg.norm(value - reference) / denominator).item())
 
