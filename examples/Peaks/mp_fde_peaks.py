@@ -61,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--memory', type=int, default=-1, help='Memory setting for FDE integration (-1 for full memory)')
     parser.add_argument('--return_history', action='store_true', help='Whether to return the full history of the solution during FDE integration')
     parser.add_argument('--num_layers', type=int, default=3, help='Number of layers in the ODE function network for the FDE block')
+    parser.add_argument('--graded_time', action='store_true', help='Whether to use graded time for the FDE integration')
 
     # Multi-term FDE Settings
     parser.add_argument('--multi_beta', type=float, nargs='+', default=None, help='Orders of the fractional derivatives for multi-term FDEs')
@@ -91,6 +92,7 @@ class FDEConfig:
     return_history: bool = False
     dtype_hi: Optional[torch.dtype] = None
     mp_dtype: Optional[torch.dtype] = None
+    graded_time: bool = False
 
     # Multi-term FDE Settings
     multi_beta: Optional[List[float]] = None
@@ -106,6 +108,7 @@ class ModeConfig:
     loss_scaler: Any = False
     dtype_hi: Optional[torch.dtype] = None
     mp_dtype: Optional[torch.dtype] = None
+    graded_time: bool = False
 
 class ODEFunc(nn.Module):
     def __init__(self, width: int, num_layers: int = 3):
@@ -144,6 +147,7 @@ class FDEBlock(nn.Module):
             'return_history': cfg.return_history,
             'dtype_hi': cfg.dtype_hi,
             'mp_dtype': cfg.mp_dtype,
+            'graded_time': cfg.graded_time,
         }
         beta = torch.tensor(cfg.beta, device=x.device, dtype=x.dtype)
         
@@ -291,6 +295,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             autocast_dtype=None,
             loss_scaler=False,
             mp_dtype=mp_dtype,
+            graded_time=args.graded_time,
             #dtype_hi=dtype_hi,
         )
     elif mode == 'adjoint-mixed':
@@ -309,6 +314,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             loss_scaler=scaler,
             mp_dtype=mp_dtype,
             #dtype_hi=dtype_hi,
+            graded_time=args.graded_time,
         )
     elif mode == 'adjoint-mixed-bfloat':
         autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
@@ -319,6 +325,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             autocast_dtype=autocast_dtype,
             loss_scaler=False,
             mp_dtype=mp_dtype,
+            graded_time=args.graded_time,
             #dtype_hi=dtype_hi,
         )
     else:
@@ -336,7 +343,8 @@ def build_solver(mode_config: ModeConfig):
                     t=t,
                     step_size=step_size,
                     loss_scaler=mode_config.loss_scaler,
-                    adj_dtype=mode_config.mp_dtype
+                    adj_dtype=mode_config.mp_dtype,
+                    graded_time=mode_config.graded_time,
                 )
             return solver
         else: 
@@ -429,6 +437,7 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
         method = mode_config.method,
         dtype_hi = train_data.dtype,
         mp_dtype = mode_config.mp_dtype,
+        graded_time = mode_config.graded_time
     )
 
     logger.info(
@@ -437,6 +446,9 @@ def train(args: argparse.Namespace, mode_config: ModeConfig, device: torch.devic
         f'  T={fde_config.T}, '
         f'  step_size={fde_config.step_size}, '
         f'  method={fde_config.method}'
+        f'  dtype_hi={fde_config.dtype_hi}, '
+        f'  mp_dtype={fde_config.mp_dtype}, '
+        f'  graded_time={fde_config.graded_time}'
     )
     
     #print('Building model...')

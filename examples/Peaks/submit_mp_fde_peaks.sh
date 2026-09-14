@@ -64,4 +64,36 @@ job_adjmix_bf=$(sbatch --parsable --job-name=mp-peaks-adjmix-bf16 \
   "$sbatch_script")
 echo "  job_id=$job_adjmix_bf"
 
-echo "Submitted 4 Peaks jobs in parallel."
+echo "Submitting adjoint-graded..."
+job_graded_adj=$(sbatch --parsable --job-name=mp-peaks-graded-adj \
+  --export=ALL,MODE=adjoint,MP_DTYPE='float32',EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint",GRADED_TIME=True \
+  "$sbatch_script")
+echo "  job_id=$job_graded_adj"
+
+echo "Submitting adjoint-mixed-graded..."
+job_graded_adjmix=$(sbatch --parsable --job-name=mp-peaks-graded-adjmix \
+  --export=ALL,MODE=adjoint-mixed,MP_DTYPE='float16',EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint-mixed",GRADED_TIME=True \
+  "$sbatch_script")
+echo "  job_id=$job_graded_adjmix"
+
+echo "Submitting adjoint-mixed-bfloat-graded..."
+job_graded_adjmix_bf=$(sbatch --parsable --job-name=mp-peaks-graded-adjmix-bf16 \
+  --export=ALL,MODE=adjoint-mixed-bfloat,MP_DTYPE='bfloat16',EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint-mixed-bfloat",GRADED_TIME=True \
+  "$sbatch_script")
+echo "  job_id=$job_graded_adjmix_bf"
+
+echo "Submitted 7 Peaks jobs in parallel."
+
+dependency="${job_direct}:${job_adjoint}:${job_adjmix}:${job_adjmix_bf}:${job_graded_adj}:${job_graded_adjmix}:${job_graded_adjmix_bf}"
+
+analysis_job=$(sbatch --parsable \
+  --dependency="afterok:${dependency}" \
+  --job-name=peaks-analysis \
+  --partition=work1 \
+  --time=00:15:00 \
+  --ntasks=1 \
+  --cpus-per-task=1 \
+  --mem=4G \
+  --output=slurm_logs/peaks_analysis_%j.out \
+  --wrap="bash -lc 'module load anaconda3/2023.09-0 && eval \"\$(conda shell.bash hook)\" && conda run -n torch28 python -u \"/home/tcatoe/home_FDNN/MP-torchfde/examples/Peaks/Evaluate Logs/plot_peaks_training_logs.py\" --logs-dir \"/home/tcatoe/home_FDNN/MP-torchfde/examples/Peaks/${save_root}\"'")
+echo "Analysis job ID: $analysis_job"

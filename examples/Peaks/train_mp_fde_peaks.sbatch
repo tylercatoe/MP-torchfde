@@ -43,6 +43,21 @@ BETA="${BETA:-0.5}"
 T_FINAL="${T_FINAL:-2.0}"
 STEP_SIZE="${STEP_SIZE:-0.1}"
 MEMORY="${MEMORY:--1}"
+GRADED_TIME="${GRADED_TIME:-FALSE}"
+
+graded_time_arg=()
+
+case "${GRADED_TIME,,}" in
+  true|1|yes)
+    graded_time_arg=(--graded_time)
+    ;;
+  false|0|no|"")
+    ;;
+  *)
+    echo "ERROR: Invalid GRADED_TIME=$GRADED_TIME"
+    exit 1
+    ;;
+esac
 
 driver_script="/home/tcatoe/home_FDNN/MP-torchfde/examples/Peaks/mp_fde_peaks.py"
 pythonpath_root="/home/tcatoe/home_FDNN/MP-torchfde/rampfde"
@@ -93,4 +108,5 @@ conda run -n "$ENV_NAME" python -u "$driver_script" \
   --T "$T_FINAL" \
   --step_size "$STEP_SIZE" \
   --memory "$MEMORY" \
+  "${graded_time_arg[@]}" \
   --gpu 0
