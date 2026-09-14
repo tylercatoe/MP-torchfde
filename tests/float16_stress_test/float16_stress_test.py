@@ -144,10 +144,10 @@ def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln,
 
     plt.plot(to_numpy(upper_ys), label='Upper Range Solution', color='blue')
     plt.plot(to_numpy(analytical_upper_soln), label='Upper Range Analytical', color='black', linestyle='dashed')
-    plt.plot(to_numpy(abs(upper_derv)), label='Upper Range Derivative', color='orange')
+    plt.plot(abs(upper_derv), label='Upper Range Derivative', color='orange')
     plt.plot(to_numpy(lower_ys), label='Lower Range Solution', color='green')
     plt.plot(to_numpy(analytical_lower_soln), label='Lower Range Analytical', color='black', linestyle='dashed')
-    plt.plot(to_numpy(abs(lower_derv)), label='Lower Range Derivative', color='red')
+    plt.plot(abs(lower_derv), label='Lower Range Derivative', color='red')
     plt.title('FDE Solution and Derivative Ranges')
     plt.xlabel('Time Steps')
     plt.ylabel('Value')
