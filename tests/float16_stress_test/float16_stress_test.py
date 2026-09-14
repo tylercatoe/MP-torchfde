@@ -1,12 +1,6 @@
 
-import math
-import os
-import random
-import unittest
-from copy import deepcopy
-from typing import Optional
-
 import numpy as np
+import argparse
 import torch
 import torch.nn as nn
 from pymittagleffler import mittag_leffler
@@ -14,11 +8,6 @@ from pymittagleffler import mittag_leffler
 # Pylance may not resolve rampde if it is not in the IDE's configured venv.
 # The tests run correctly from the rampde/ directory with the package installed.
 from rampde import predictor_fdeint, DynamicScaler  # type: ignore[import]
-from rampde import (  # type: ignore[import]
-    PredictorFDESolverUnscaled,
-    PredictorFDESolverDynamic,
-    PredictorFDESolverUnscaledSafe,
-)
 from rampde.predictor_fdeint import _predictor_forward_impl
 
 
@@ -39,7 +28,7 @@ class Forcing(nn.Module):
     def forward(self, t, y):
         return -self.lam * y
 
-def march_trajectory(y0, beta, T, step_size, lam):
+def march_trajectory(y0, beta, T, step_size, lam, dtype: torch.dtype):
     device = torch.device("cuda")
 
     y0 = y0.to(device)
@@ -64,68 +53,64 @@ def march_trajectory(y0, beta, T, step_size, lam):
             tspan,
             beta_val,
             dtype_hi=torch.float32,
-            dtype_low=torch.float16,
+            dtype_low=dtype,
             graded_time=False,
         )
 
     return yt
 
-def test_upper_range():
+def test_upper_range(dtype: torch.dtype = torch.float16, T: float = 8.0, step_size: float = 0.01):
     """
     Test the upper range of the FDE solver for float16.
     """
 
-    y0 = torch.tensor([65504.0 / 180.0], dtype=torch.float32)
+    y0 = torch.tensor([65504.0 / 200.0], dtype=torch.float32)
     beta = torch.tensor([0.7], dtype=torch.float32)
-    T = torch.tensor([20.0], dtype=torch.float32)
-    step_size = 0.01
+    T = torch.tensor([T], dtype=torch.float32)
     lam = 199.0
 
-    ys = march_trajectory(y0, beta, T, step_size, lam)
+    ys = march_trajectory(y0, beta, T, step_size, lam, dtype=dtype)
 
     return ys
 
-def test_lower_range():
+def test_lower_range(dtype: torch.dtype = torch.float16, T: float = 8.0, step_size: float = 0.01):
     """
     Test the lower range of the FDE solver for float16.
     """
 
     y0 = torch.tensor([1.0], dtype=torch.float32)
     beta = torch.tensor([0.9], dtype=torch.float32)
-    T = torch.tensor([20.0], dtype=torch.float32)
-    step_size = 0.01
+    T = torch.tensor([T], dtype=torch.float32)
     lam = 199.0
 
-    ys = march_trajectory(y0, beta, T, step_size, lam)
+    ys = march_trajectory(y0, beta, T, step_size, lam, dtype=dtype)
 
     return ys
 
-def upper_analytical():
+def upper_analytical(T, step_size):
     """
     Analytical solution for the upper range test.
     """
-    y0 = 65504.0 / 180.0
+    y0 = 65504.0 / 200.0
     beta = 0.7
-    T = 20.0
     lam = 199.0
 
-    tspan = np.linspace(0.0, T, int(round(T / 0.01)) + 1)
+    tspan = np.linspace(0.0, T, int(round(T / step_size)) + 1)
     analytical_solution = y0 * mittag_leffler(-lam * tspan**beta, beta, 1)
 
     analytical_deiv = -lam * analytical_solution
 
     return analytical_solution, analytical_deiv
 
-def lower_analytical():
+def lower_analytical(T, step_size):
     """
     Analytical solution for the lower range test.
     """
     y0 = 1.0
     beta = 0.9
-    T = 20.0
     lam = 199.0
 
-    tspan = np.linspace(0.0, T, int(round(T / 0.01)) + 1)
+    tspan = np.linspace(0.0, T, int(round(T / step_size)) + 1)
     analytical_solution = y0 * mittag_leffler(-lam * tspan**beta, beta, 1)
 
     analytical_deiv = -lam * analytical_solution
@@ -140,7 +125,7 @@ def to_numpy(x):
 def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln, analytical_lower_soln):
     import matplotlib.pyplot as plt
 
-    tspan = np.linspace(0.0, 20.0, int(round(20.0 / 0.01)) + 1)
+    tspan = np.linspace(0.0, 8.0, int(round(8.0 / 0.01)) + 1)
 
     plt.figure(figsize=(12, 6))
 
@@ -161,14 +146,37 @@ def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln,
 
     plt.tight_layout()
     plt.savefig('fde_solution_derivative_ranges.png')
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Float16 Stress Test for FDE Solver")
+    parser.add_argument("--dtype", type=str, default="torch.float16", choices=["torch.float16", "torch.bfloat16", "torch.float32"], help="Data type for low precision computation")
+    parser.add_argument("--T", type=float, default=8.0, help="Final time for the simulation")
+    parser.add_argument("--step_size", type=float, default=0.01, help="Step size for the simulation")
+    return parser.parse_args()
+
+def get_dtype(dtype_str):
+    if dtype_str == "torch.float16":
+        return torch.float16
+    elif dtype_str == "torch.bfloat16":
+        return torch.bfloat16
+    elif dtype_str == "torch.float32":
+        return torch.float32
+    else:
+        raise ValueError(f"Unsupported dtype: {dtype_str}")
     
 
 if __name__ == "__main__":
-    upper_ys = test_upper_range()
-    lower_ys = test_lower_range()
+    args = parse_args()
+    T = args.T
+    step_size = args.step_size
+    dtype = get_dtype(args.dtype)
 
-    analytical_upper_soln, analytical_upper_derv = upper_analytical()
-    analytical_lower_soln, analytical_lower_derv = lower_analytical()
+    upper_ys = test_upper_range(dtype, T=T, step_size=step_size)
+    lower_ys = test_lower_range(dtype, T=T, step_size=step_size)
+
+    analytical_upper_soln, analytical_upper_derv = upper_analytical(T=T, step_size=step_size)
+    analytical_lower_soln, analytical_lower_derv = lower_analytical(T=T, step_size=step_size)
 
     make_plot(upper_ys, analytical_upper_derv, lower_ys, analytical_lower_derv, analytical_upper_soln, analytical_lower_soln)
     
