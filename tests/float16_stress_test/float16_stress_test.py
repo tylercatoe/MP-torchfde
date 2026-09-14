@@ -78,7 +78,7 @@ def test_upper_range():
     y0 = torch.tensor([65504.0 / 180.0], dtype=torch.float32)
     beta = torch.tensor([0.7], dtype=torch.float32)
     T = torch.tensor([20.0], dtype=torch.float32)
-    step_size = 0.1
+    step_size = 0.01
     lam = 199.0
 
     ys = march_trajectory(y0, beta, T, step_size, lam)
@@ -93,7 +93,7 @@ def test_lower_range():
     y0 = torch.tensor([1.0], dtype=torch.float32)
     beta = torch.tensor([0.9], dtype=torch.float32)
     T = torch.tensor([20.0], dtype=torch.float32)
-    step_size = 0.1
+    step_size = 0.01
     lam = 199.0
 
     ys = march_trajectory(y0, beta, T, step_size, lam)
@@ -140,16 +140,18 @@ def to_numpy(x):
 def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln, analytical_lower_soln):
     import matplotlib.pyplot as plt
 
+    tspan = np.linspace(0.0, 20.0, int(round(20.0 / 0.1)) + 1)
+
     plt.figure(figsize=(12, 6))
 
-    plt.plot(to_numpy(upper_ys), label='Upper Range Solution', color='blue')
-    plt.plot(analytical_upper_soln, label='Upper Range Analytical', color='black', linestyle='dashed')
-    plt.plot(abs(upper_derv), label='Upper Range Derivative', color='orange')
-    plt.plot(to_numpy(lower_ys), label='Lower Range Solution', color='green')
-    plt.plot(analytical_lower_soln, label='Lower Range Analytical', color='black', linestyle='dashed')
-    plt.plot(abs(lower_derv), label='Lower Range Derivative', color='red')
+    plt.plot(tspan, to_numpy(upper_ys), label='Upper Range Solution', color='blue')
+    plt.plot(tspan, analytical_upper_soln, label='Upper Range Analytical', color='black', linestyle='dashed')
+    plt.plot(tspan, abs(upper_derv), label='Upper Range Derivative', color='orange')
+    plt.plot(tspan, to_numpy(lower_ys), label='Lower Range Solution', color='green')
+    plt.plot(tspan, analytical_lower_soln, label='Lower Range Analytical', color='black', linestyle='dashed')
+    plt.plot(tspan, abs(lower_derv), label='Lower Range Derivative', color='red')
     plt.title('FDE Solution and Derivative Ranges')
-    plt.xlabel('Time Steps')
+    plt.xlabel('t')
     plt.ylabel('Value')
     plt.yscale('log')
     plt.legend()
