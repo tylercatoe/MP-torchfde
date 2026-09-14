@@ -87,13 +87,13 @@ def test_lower_range(dtype: torch.dtype = torch.float16, T: float = 8.0, step_si
 
     return ys
 
-def upper_analytical(T, step_size):
+def upper_analytical(T, step_size, y0, beta, lam):
     """
     Analytical solution for the upper range test.
     """
-    y0 = 65504.0 / 200.0
+    y0 = 50000.0
     beta = 0.7
-    lam = 199.0
+    lam = 1.0
 
     tspan = np.linspace(0.0, T, int(round(T / step_size)) + 1)
     analytical_solution = y0 * mittag_leffler(-lam * tspan**beta, beta, 1)
@@ -106,9 +106,9 @@ def lower_analytical(T, step_size):
     """
     Analytical solution for the lower range test.
     """
-    y0 = 1.0
+    y0 = 0.010
     beta = 0.9
-    lam = 199.0
+    lam = 1.0
 
     tspan = np.linspace(0.0, T, int(round(T / step_size)) + 1)
     analytical_solution = y0 * mittag_leffler(-lam * tspan**beta, beta, 1)
