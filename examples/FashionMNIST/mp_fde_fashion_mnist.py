@@ -68,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--step_size", type=float, default=0.1, help="FDE integration step size")
     parser.add_argument("--memory", type=int, default=-1, help="Memory for FDE adjoint (-1 for full)")
     parser.add_argument("--return_history", action="store_true", help="Return full state history from FDE solver")
+    parser.add_argument("--graded_time", action="store_true", help="Use graded time discretization for FDE integration")
 
     # Multi-term FDE parameters
     parser.add_argument("--multi_beta", type=float, nargs="+", default=None, help="Fractional orders for multi-term FDE")
@@ -103,6 +104,7 @@ class FDEConfig:
     method: str = "predictor-f"
     memory: int = -1
     return_history: bool = False
+    graded_time: bool = False
     dtype_hi: Optional[torch.dtype] = torch.float32
     mp_dtype: Optional[torch.dtype] = None
 
@@ -119,6 +121,7 @@ class ModeConfig:
     dtype_hi: Optional[torch.dtype] = torch.float32
     mp_dtype: Optional[torch.dtype] = None
     loss_scaler: Any = False
+    graded_time: bool = False
 
 def dtype_from_name(name: str) -> torch.dtype:
     if name == "float16":
@@ -190,6 +193,7 @@ class FDEBlock(nn.Module):
             "return_history": cfg.return_history,
             "dtype_hi": cfg.dtype_hi,
             "mp_dtype": cfg.mp_dtype,
+            "graded_time": cfg.graded_time,
         }
 
         beta = torch.tensor(cfg.beta, device=x.device, dtype=cfg.dtype_hi)
@@ -367,6 +371,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             dtype_hi=dtype_hi,
             mp_dtype=None,
             loss_scaler=False,
+            graded_time=args.graded_time
         )
     elif mode == "adjoint":
         return ModeConfig(
@@ -376,6 +381,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             dtype_hi=dtype_hi,
             mp_dtype=None,
             loss_scaler=False,
+            graded_time=args.graded_time
         )
     elif mode == "adjoint-mixed":
         scaler: Any = False
@@ -391,6 +397,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             dtype_hi=dtype_hi,
             mp_dtype=mp_dtype,
             loss_scaler=scaler,
+            graded_time=args.graded_time
         )
         
     elif mode == "adjoint-mixed-bfloat":
@@ -401,6 +408,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             dtype_hi=dtype_hi,
             mp_dtype=mp_dtype,
             loss_scaler=False, 
+            graded_time=args.graded_time
         )
     else:
         raise ValueError(f"Invalid mode '{mode}'.")
@@ -417,7 +425,8 @@ def build_solver(mode_config: ModeConfig):
                     t=t,
                     step_size=step_size,
                     loss_scaler=mode_config.loss_scaler,
-                    adj_dtype=mode_config.mp_dtype
+                    adj_dtype=mode_config.mp_dtype,
+                    graded_time=mode_config.graded_time,
                 )
             return solver
         else: 
@@ -496,6 +505,7 @@ if __name__ == "__main__":
         return_history=args.return_history,
         dtype_hi= dtype_from_name(args.dtype_hi),
         mp_dtype= dtype_from_name(args.mp_dtype),
+        graded_time=args.graded_time
     )
 
     if mode_cfg.use_adjoint:
