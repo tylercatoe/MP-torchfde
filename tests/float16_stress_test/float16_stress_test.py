@@ -64,10 +64,10 @@ def test_upper_range(dtype: torch.dtype = torch.float16, T: float = 8.0, step_si
     Test the upper range of the FDE solver for float16.
     """
 
-    y0 = torch.tensor([50000.0], dtype=torch.float32)
+    y0 = torch.tensor([50000.0 / 100], dtype=torch.float32)
     beta = torch.tensor([0.7], dtype=torch.float32)
     T = torch.tensor([T], dtype=torch.float32)
-    lam = 0.10
+    lam = 80.0
 
     ys = march_trajectory(y0, beta, T, step_size, lam, dtype=dtype)
 
@@ -78,10 +78,10 @@ def test_lower_range(dtype: torch.dtype = torch.float16, T: float = 8.0, step_si
     Test the lower range of the FDE solver for float16.
     """
 
-    y0 = torch.tensor([.010], dtype=torch.float32)
+    y0 = torch.tensor([.10], dtype=torch.float32)
     beta = torch.tensor([0.9], dtype=torch.float32)
     T = torch.tensor([T], dtype=torch.float32)
-    lam = 0.10
+    lam = 20.0
 
     ys = march_trajectory(y0, beta, T, step_size, lam, dtype=dtype)
 
@@ -91,9 +91,9 @@ def upper_analytical(T, step_size):
     """
     Analytical solution for the upper range test.
     """
-    y0 = 50000.0
+    y0 = 50000.0 / 100
     beta = 0.7
-    lam = 0.10
+    lam = 80.0
 
     tspan = np.linspace(0.0, T, int(round(T / step_size)) + 1)
     analytical_solution = y0 * mittag_leffler(-lam * tspan**beta, beta, 1)
@@ -106,9 +106,9 @@ def lower_analytical(T, step_size):
     """
     Analytical solution for the lower range test.
     """
-    y0 = 0.010
+    y0 = 0.10
     beta = 0.9
-    lam = 0.10
+    lam = 20.0
 
     tspan = np.linspace(0.0, T, int(round(T / step_size)) + 1)
     analytical_solution = y0 * mittag_leffler(-lam * tspan**beta, beta, 1)
