@@ -129,12 +129,12 @@ def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln,
 
     plt.figure(figsize=(12, 6))
 
-    plt.plot(tspan, to_numpy(upper_ys), label='Upper Range Solution', color='blue')
-    plt.plot(tspan, analytical_upper_soln, label='Upper Range Analytical', color='black', linestyle='dashed')
-    plt.plot(tspan, abs(upper_derv), label='Upper Range Derivative', color='orange')
-    plt.plot(tspan, to_numpy(lower_ys), label='Lower Range Solution', color='green')
-    plt.plot(tspan, analytical_lower_soln, label='Lower Range Analytical', color='black', linestyle='dashed')
-    plt.plot(tspan, abs(lower_derv), label='Lower Range Derivative', color='red')
+    plt.plot(tspan, to_numpy(upper_ys), label='UR Numerical Solution', color='blue')
+    plt.plot(tspan, analytical_upper_soln, label='UR Analytical', color='black', linestyle='dashed')
+    plt.plot(tspan, abs(upper_derv), label='UR Derivative', color='orange')
+    plt.plot(tspan, to_numpy(lower_ys), label='LR Numerical Solution', color='green')
+    plt.plot(tspan, analytical_lower_soln, label='LR Analytical', color='black', linestyle='dashed')
+    plt.plot(tspan, abs(lower_derv), label='LR Derivative', color='red')
     plt.plot(tspan, np.full_like(tspan, 65504.0), label='Float16 Max', color='purple', linestyle='dotted')
     plt.plot(tspan, np.full_like(tspan, 6.1e-5), label='Float16 Min', color='brown', linestyle='dotted')
     plt.title('FDE Solution and Derivative Ranges')
