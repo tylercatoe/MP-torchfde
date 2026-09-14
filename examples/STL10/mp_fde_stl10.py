@@ -66,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--step_size", type=float, default=0.1, help="FDE integration step size")
     parser.add_argument("--memory", type=int, default=-1, help="Memory for FDE adjoint (-1 for full)")
     parser.add_argument("--return_history", action="store_true", help="Return full state history from FDE solver")
+    parser.add_argument("--graded_time", action="store_true", help="Use graded time discretization for FDE integration")
 
     # Multi-term FDE parameters
     parser.add_argument("--multi_beta", type=float, nargs="+", default=None, help="Fractional orders for multi-term FDE")
@@ -102,6 +103,7 @@ class FDEConfig:
     return_history: bool = False
     dtype_hi: Optional[torch.dtype] = None
     mp_dtype: Optional[torch.dtype] = None
+    graded_time: bool = False
 
     # Multi-term FDE settings
     multi_beta: Optional[List[float]] = None
@@ -117,26 +119,7 @@ class ModeConfig:
     loss_scaler: Any = False
     dtype_hi: Optional[torch.dtype] = None
     mp_dtype: Optional[torch.dtype] = None
-
-
-
-# def validate_args(args: argparse.Namespace) -> None:
-#     if args.T <= 0:
-#         raise ValueError("--T must be positive.")
-#     if args.step_size <= 0:
-#         raise ValueError("--step_size must be positive.")
-#     if args.time_bins < 1:
-#         raise ValueError("--time-bins must be at least 1.")
-#     if args.train_size < 1:
-#         raise ValueError("--train-size must be at least 1.")
-
-#     has_multi_beta = args.multi_beta is not None
-#     has_multi_coeff = args.multi_coefficient is not None
-#     if has_multi_beta != has_multi_coeff:
-#         raise ValueError("Provide both --multi_beta and --multi_coefficient together.")
-
-#     if has_multi_beta and len(args.multi_beta) != len(args.multi_coefficient):
-#         raise ValueError("--multi_beta and --multi_coefficient must have the same length.")
+    graded_time: bool = False
 
 
 # =============================================================================
@@ -206,24 +189,7 @@ class FDEBlock(nn.Module):
         self.odefunc = odefunc
         self.fde_config = fde_config
         self.fdeint_solver = fdeint_solver
-        # self._setup_multi_term()
-
-    # def _setup_multi_term(self) -> None:
-    #     cfg = self.fde_config
-    #     if cfg.multi_coefficient is not None:
-    #         coeff_tensor = torch.tensor(cfg.multi_coefficient, dtype=torch.float32)
-    #         beta_tensor = torch.tensor(cfg.multi_beta, dtype=torch.float32)
-
-    #         if cfg.learn_coefficient:
-    #             self.multi_coefficient = nn.Parameter(coeff_tensor)
-    #         else:
-    #             self.register_buffer("multi_coefficient", coeff_tensor)
-
-    #         self.register_buffer("multi_beta", beta_tensor)
-    #     else:
-    #         self.multi_coefficient = None
-    #         self.multi_beta = None
-
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         cfg = self.fde_config
         options = {
@@ -231,12 +197,9 @@ class FDEBlock(nn.Module):
             "return_history": cfg.return_history,
             "dtype_hi": cfg.dtype_hi,
             "mp_dtype": cfg.mp_dtype,
+            "graded_time": cfg.graded_time,
         }
 
-        # if self.multi_coefficient is not None:
-        #     beta = self.multi_beta.to(x.device)
-        #     options["multi_coefficient"] = self.multi_coefficient.to(x.device)
-        # else:
         beta = torch.tensor(cfg.beta, device=x.device, dtype=x.dtype)
 
         out = self.fdeint_solver(
@@ -254,8 +217,8 @@ class FDEBlock(nn.Module):
         cfg = self.fde_config
         base = f"beta={cfg.beta}, T={cfg.T}, step_size={cfg.step_size}, method='{cfg.method}'"
         base += f", memory={cfg.memory}, return_history={cfg.return_history}"
-        # if self.multi_coefficient is not None:
-        #     base = f"multi_term=True, beta={list(cfg.multi_beta)}, " + base
+        base += f", graded_time={cfg.graded_time}"
+
         return base
 
 
@@ -580,6 +543,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             autocast_dtype=None,
             loss_scaler=False,
             mp_dtype=mp_dtype,
+            graded_time=args.graded_time
         )
     elif mode == "adjoint-mixed":
         autocast_dtype = mp_dtype if device.type == "cuda" else None
@@ -596,6 +560,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             autocast_dtype=autocast_dtype,
             loss_scaler=scaler,
             mp_dtype=mp_dtype,
+            graded_time=args.graded_time
         )
         
     elif mode == "adjoint-mixed-bfloat":
@@ -607,6 +572,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             autocast_dtype=autocast_dtype,
             loss_scaler=False,
             mp_dtype=mp_dtype,
+            graded_time=args.graded_time
         )
     else:
         raise ValueError(f"Invalid mode '{mode}'.")
@@ -624,7 +590,8 @@ def build_solver(mode_config: ModeConfig):
                     t=t,
                     step_size=step_size,
                     loss_scaler=mode_config.loss_scaler,
-                    adj_dtype=mode_config.mp_dtype
+                    adj_dtype=mode_config.mp_dtype,
+                    graded_time=mode_config.graded_time,
                 )
             return solver
         else: 
@@ -705,6 +672,9 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
     else:
         logger.info('No loss scaler will be used')
 
+    if mode_cfg.graded_time:
+        logger.info("Using graded time discretization for FDE integration")
+
     data_gen = inf_generator(train_loader)
     best_acc = 0.0
     last_val_acc = float("nan")
@@ -717,6 +687,7 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
         memory=args.memory,
         return_history=args.return_history,
         dtype_hi=train_loader.dataset[0][0].dtype,
+        graded_time=mode_cfg.graded_time,
         mp_dtype=mode_cfg.mp_dtype,
     )
 
@@ -725,7 +696,8 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
         f"  beta={fde_config.beta},"
         f"  T={fde_config.T}, "
         f"  step_size={fde_config.step_size},"
-        f"  method={fde_config.method}"
+        f"  method={fde_config.method},"
+        f"  graded_time={fde_config.graded_time},"
     )
 
     fdeint_solver = build_solver(mode_cfg)

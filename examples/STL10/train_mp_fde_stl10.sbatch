@@ -45,6 +45,21 @@ STEP_SIZE="${STEP_SIZE:-0.1}"
 TRAIN_SIZE="${TRAIN_SIZE:-4000}"
 TIME_BINS="${TIME_BINS:-4}"
 UNSTABLE="${UNSTABLE:-0}"
+GRADED_TIME="${GRADED_TIME:-FALSE}"
+
+graded_time_arg=()
+
+case "${GRADED_TIME,,}" in
+  true|1|yes)
+    graded_time_arg=(--graded_time)
+    ;;
+  false|0|no|"")
+    ;;
+  *)
+    echo "ERROR: Invalid GRADED_TIME=$GRADED_TIME"
+    exit 1
+    ;;
+esac
 
 ENV_PATH="${HOME}/.conda/envs/${ENV_NAME}"
 if [ -d "${ENV_PATH}/lib" ]; then
@@ -136,4 +151,5 @@ conda run -n "$ENV_NAME" python -u "$driver_script" \
   --train-size "$TRAIN_SIZE" \
   --time-bins "$TIME_BINS" \
   "${repro_args[@]}" \
+  "${graded_time_arg[@]}" \
   $unstable_arg

@@ -50,12 +50,33 @@ job_adjmix_bf16=$(sbatch --parsable --job-name=mp-stl10-adjmix-bf16 \
   "$sbatch_script")
 echo "  job_id=$job_adjmix_bf16"
 
-echo "Submitted 4 jobs in parallel."
+echo "Submitting adjoint-graded..."
+job_graded_adj=$(sbatch --parsable --job-name=mp-stl10-graded-adj \
+  --export=ALL,MODE=adjoint,MP_DTYPE=float32,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint",DOWNLOAD_DATA=0,GRADED_TIME=True \
+  "$sbatch_script")
+echo "  job_id=$job_graded_adj"
+
+echo "Submitting adjoint-mixed-graded..."
+job_graded_adjmix=$(sbatch --parsable --job-name=mp-stl10-graded-adjmix \
+  --export=ALL,MODE=adjoint-mixed,MP_DTYPE=float16,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint-mixed",DOWNLOAD_DATA=0,GRADED_TIME=True \
+  "$sbatch_script")
+echo "  job_id=$job_graded_adjmix"
+
+echo "Submitting adjoint-mixed-bfloat-graded..."
+job_graded_adjmix_bf16=$(sbatch --parsable --job-name=mp-stl10-graded-adjmix-bf16 \
+  --export=ALL,MODE=adjoint-mixed-bfloat,MP_DTYPE=bfloat16,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint-mixed-bfloat",DOWNLOAD_DATA=0,GRADED_TIME=True \
+  "$sbatch_script")
+echo "  job_id=$job_graded_adjmix_bf16"
+
+echo "Submitted 7 jobs in parallel."
 
 merge_summary="${MERGE_SUMMARY:-1}"
 if [ "$merge_summary" = "1" ]; then
-  submit_dir="$(pwd)"
-  dep="afterany:${job_direct}:${job_adj}:${job_adjmix}:${job_adjmix_bf16}"
+  # Training jobs save relative to the STL10 project directory in the sbatch
+  # script, so the merge job must use that same directory regardless of where
+  # this submitter was invoked from.
+  submit_dir="$script_dir"
+  dep="afterany:${job_direct}:${job_adj}:${job_adjmix}:${job_adjmix_bf16}:${job_graded_adj}:${job_graded_adjmix}:${job_graded_adjmix_bf16}"
   merge_job_script="$submit_dir/slurm_logs/mp_fde_stl10_summary_merge_job.sh"
   cat > "$merge_job_script" <<'SLURM'
 #!/bin/bash
@@ -85,7 +106,7 @@ import os
 import time
 
 save_root = os.environ["SAVE_ROOT"]
-modes = ["direct", "adjoint", "adjoint-mixed", "adjoint-mixed-bfloat"]
+modes = ["direct", "adjoint", "adjoint-mixed", "adjoint-mixed-bfloat", "graded-adjoint", "graded-adjoint-mixed", "graded-adjoint-mixed-bfloat"]
 headers = [
     "Mode",
     "Val Error",
