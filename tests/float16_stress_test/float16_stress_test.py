@@ -140,7 +140,7 @@ def to_numpy(x):
 def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln, analytical_lower_soln):
     import matplotlib.pyplot as plt
 
-    tspan = np.linspace(0.0, 20.0, int(round(20.0 / 0.1)) + 1)
+    tspan = np.linspace(0.0, 20.0, int(round(20.0 / 0.01)) + 1)
 
     plt.figure(figsize=(12, 6))
 
@@ -150,6 +150,8 @@ def make_plot(upper_ys, upper_derv, lower_ys, lower_derv, analytical_upper_soln,
     plt.plot(tspan, to_numpy(lower_ys), label='Lower Range Solution', color='green')
     plt.plot(tspan, analytical_lower_soln, label='Lower Range Analytical', color='black', linestyle='dashed')
     plt.plot(tspan, abs(lower_derv), label='Lower Range Derivative', color='red')
+    plt.plot(tspan, np.full_like(tspan, 65504.0), label='Float16 Max', color='purple', linestyle='dotted')
+    plt.plot(tspan, np.full_like(tspan, 6.1e-5), label='Float16 Min', color='brown', linestyle='dotted')
     plt.title('FDE Solution and Derivative Ranges')
     plt.xlabel('t')
     plt.ylabel('Value')
