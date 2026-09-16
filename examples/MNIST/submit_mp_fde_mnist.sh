@@ -22,46 +22,48 @@ else
 fi
 
 mkdir -p slurm_logs
+predictor_corrector="${PREDICTOR_CORRECTOR:-FALSE}"
+echo "Predictor-corrector for adjoint jobs: $predictor_corrector"
 
 echo "Submitting direct..."
 job_direct=$(sbatch --parsable --job-name=mp-mnist-direct \
-  --export=ALL,MODE=direct,EPOCHS="$epochs",SAVE_ROOT="$save_root/direct" \
+  --export=ALL,MODE=direct,EPOCHS="$epochs",SAVE_ROOT="$save_root/direct",GRADED_TIME=False,PREDICTOR_CORRECTOR=False \
   "$sbatch_script")
 echo "  job_id=$job_direct"
 
 echo "Submitting adjoint..."
 job_adj=$(sbatch --parsable --job-name=mp-mnist-adjoint \
-  --export=ALL,MODE=adjoint,DTYPE_HI=float32,MP_DTYPE=float32,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint" \
+  --export=ALL,MODE=adjoint,DTYPE_HI=float32,MP_DTYPE=float32,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint",GRADED_TIME=False,PREDICTOR_CORRECTOR="$predictor_corrector" \
   "$sbatch_script")
 echo "  job_id=$job_adj"
 
 echo "Submitting adjoint-mixed..."
 job_adjmix=$(sbatch --parsable --job-name=mp-mnist-adjmix \
-  --export=ALL,MODE=adjoint-mixed,MP_DTYPE=float16,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed" \
+  --export=ALL,MODE=adjoint-mixed,MP_DTYPE=float16,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed",GRADED_TIME=False,PREDICTOR_CORRECTOR="$predictor_corrector" \
   "$sbatch_script")
 echo "  job_id=$job_adjmix"
 
 echo "Submitting adjoint-mixed-bfloat..."
 job_adjmix_bf16=$(sbatch --parsable --job-name=mp-mnist-adjmix-bf16 \
-  --export=ALL,MODE=adjoint-mixed-bfloat,MP_DTYPE=bfloat16,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed-bfloat" \
+  --export=ALL,MODE=adjoint-mixed-bfloat,MP_DTYPE=bfloat16,EPOCHS="$epochs",SAVE_ROOT="$save_root/adjoint-mixed-bfloat",GRADED_TIME=False,PREDICTOR_CORRECTOR="$predictor_corrector" \
   "$sbatch_script")
 echo "  job_id=$job_adjmix_bf16"
 
 echo "Submitting adjoint-graded..."
 job_graded_adj=$(sbatch --parsable --job-name=mp-mnist-graded-adj \
-  --export=ALL,MODE=adjoint,DTYPE_HI=float32,MP_DTYPE=float32,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint",GRADED_TIME=True \
+  --export=ALL,MODE=adjoint,DTYPE_HI=float32,MP_DTYPE=float32,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint",GRADED_TIME=True,PREDICTOR_CORRECTOR="$predictor_corrector" \
   "$sbatch_script")
 echo "  job_id=$job_graded_adj"
 
 echo "Submitting adjoint-mixed-graded..."
 job_graded_adjmix=$(sbatch --parsable --job-name=mp-mnist-graded-adjmix \
-  --export=ALL,MODE=adjoint-mixed,MP_DTYPE=float16,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint-mixed",GRADED_TIME=True \
+  --export=ALL,MODE=adjoint-mixed,MP_DTYPE=float16,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint-mixed",GRADED_TIME=True,PREDICTOR_CORRECTOR="$predictor_corrector" \
   "$sbatch_script")
 echo "  job_id=$job_graded_adjmix"
 
 echo "Submitting adjoint-mixed-bfloat-graded..."
 job_graded_adjmix_bf16=$(sbatch --parsable --job-name=mp-mnist-graded-adjmix-bf16 \
-  --export=ALL,MODE=adjoint-mixed-bfloat,MP_DTYPE=bfloat16,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint-mixed-bfloat",GRADED_TIME=True \
+  --export=ALL,MODE=adjoint-mixed-bfloat,MP_DTYPE=bfloat16,EPOCHS="$epochs",SAVE_ROOT="$save_root/graded-adjoint-mixed-bfloat",GRADED_TIME=True,PREDICTOR_CORRECTOR="$predictor_corrector" \
   "$sbatch_script")
 echo "  job_id=$job_graded_adjmix_bf16"
 

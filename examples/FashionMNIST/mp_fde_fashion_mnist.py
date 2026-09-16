@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory", type=int, default=-1, help="Memory for FDE adjoint (-1 for full)")
     parser.add_argument("--return_history", action="store_true", help="Return full state history from FDE solver")
     parser.add_argument("--graded_time", action="store_true", help="Use graded time discretization for FDE integration")
+    parser.add_argument("--predictor_corrector", action="store_true", help="Use the predictor-corrector update instead of the predictor-only update")
 
     # Multi-term FDE parameters
     parser.add_argument("--multi_beta", type=float, nargs="+", default=None, help="Fractional orders for multi-term FDE")
@@ -105,6 +106,7 @@ class FDEConfig:
     memory: int = -1
     return_history: bool = False
     graded_time: bool = False
+    predictor_corrector: bool = False
     dtype_hi: Optional[torch.dtype] = torch.float32
     mp_dtype: Optional[torch.dtype] = None
 
@@ -118,10 +120,12 @@ class ModeConfig:
     name: str
     use_adjoint: bool
     method: str
+    autocast_dtype: Optional[torch.dtype] = None
     dtype_hi: Optional[torch.dtype] = torch.float32
     mp_dtype: Optional[torch.dtype] = None
     loss_scaler: Any = False
     graded_time: bool = False
+    predictor_corrector: bool = False
 
 def dtype_from_name(name: str) -> torch.dtype:
     if name == "float16":
@@ -194,6 +198,7 @@ class FDEBlock(nn.Module):
             "dtype_hi": cfg.dtype_hi,
             "mp_dtype": cfg.mp_dtype,
             "graded_time": cfg.graded_time,
+            "predictor_corrector": cfg.predictor_corrector,
         }
 
         beta = torch.tensor(cfg.beta, device=x.device, dtype=cfg.dtype_hi)
@@ -363,30 +368,43 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
         mp_scaler_mode = args.mp_loss_scaler
 
     mode = args.mode
+    if (args.graded_time or args.predictor_corrector) and mode == "direct":
+        raise ValueError("--graded_time and --predictor_corrector require an adjoint mode with --adjoint_method predictor-f")
+    if (args.graded_time or args.predictor_corrector) and args.adjoint_method != "predictor-f":
+        raise ValueError("--graded_time and --predictor_corrector are only supported with --adjoint_method predictor-f")
+
     if mode == "direct":
         return ModeConfig(
             name="direct",
             use_adjoint=False,
             method=direct_method,
-            dtype_hi=dtype_hi,
-            mp_dtype=None,
+            autocast_dtype=None,
+            dtype_hi=torch.float32,
+            mp_dtype=torch.float32,
             loss_scaler=False,
-            graded_time=args.graded_time
+            graded_time=False,
+            predictor_corrector=False,
         )
     elif mode == "adjoint":
         return ModeConfig(
             name="adjoint",
             use_adjoint=True,
             method=args.adjoint_method,
-            dtype_hi=dtype_hi,
-            mp_dtype=None,
+            autocast_dtype=None,
+            dtype_hi=torch.float32,
+            mp_dtype=torch.float32,
             loss_scaler=False,
-            graded_time=args.graded_time
+            graded_time=args.graded_time,
+            predictor_corrector=args.predictor_corrector,
         )
     elif mode == "adjoint-mixed":
+        autocast_dtype = mp_dtype if device.type == "cuda" else None
         scaler: Any = False
         if device.type == "cuda" and mp_scaler_mode == "dynamic" and mp_dtype == torch.float16:
-            from torchfde import DynamicScaler
+            if args.adjoint_method == "predictor-f":
+                from rampde import DynamicScaler
+            else:
+                from torchfde import DynamicScaler
     
             scaler = DynamicScaler(dtype_low=torch.float16)
 
@@ -394,28 +412,33 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             name="adjoint-mixed",
             use_adjoint=True,
             method=args.adjoint_method,
+            autocast_dtype=autocast_dtype,
             dtype_hi=dtype_hi,
             mp_dtype=mp_dtype,
             loss_scaler=scaler,
-            graded_time=args.graded_time
+            graded_time=args.graded_time,
+            predictor_corrector=args.predictor_corrector,
         )
         
     elif mode == "adjoint-mixed-bfloat":
+        autocast_dtype = torch.bfloat16 if device.type == "cuda" else None
         return ModeConfig(
             name="adjoint-mixed-bfloat",
             use_adjoint=True,
             method=args.adjoint_method,
+            autocast_dtype=autocast_dtype,
             dtype_hi=dtype_hi,
             mp_dtype=mp_dtype,
             loss_scaler=False, 
-            graded_time=args.graded_time
+            graded_time=args.graded_time,
+            predictor_corrector=args.predictor_corrector,
         )
     else:
         raise ValueError(f"Invalid mode '{mode}'.")
     
 def build_solver(mode_config: ModeConfig):
     if mode_config.use_adjoint:
-        if mode_config.mp_dtype is not None:
+        if mode_config.method == "predictor-f":
             from rampde import predictor_fdeint
             def solver(func, y0, beta, t, step_size, method, options=None):
                 return predictor_fdeint(
@@ -427,6 +450,7 @@ def build_solver(mode_config: ModeConfig):
                     loss_scaler=mode_config.loss_scaler,
                     adj_dtype=mode_config.mp_dtype,
                     graded_time=mode_config.graded_time,
+                    predictor_corrector=mode_config.predictor_corrector,
                 )
             return solver
         else: 
@@ -503,9 +527,10 @@ if __name__ == "__main__":
         method=mode_cfg.method,
         memory=args.memory,
         return_history=args.return_history,
-        dtype_hi= dtype_from_name(args.dtype_hi),
-        mp_dtype= dtype_from_name(args.mp_dtype),
-        graded_time=args.graded_time
+        dtype_hi=mode_cfg.dtype_hi,
+        mp_dtype=mode_cfg.mp_dtype,
+        graded_time=mode_cfg.graded_time,
+        predictor_corrector=mode_cfg.predictor_corrector,
     )
 
     if mode_cfg.use_adjoint:
@@ -513,8 +538,8 @@ if __name__ == "__main__":
     else:
         logger.info(f'Using standard backprop (no adjoint)')
 
-    if mode_cfg.mp_dtype is not None:
-        logger.info(f"Using MP autocast with dtype: {mode_cfg.mp_dtype}")
+    if mode_cfg.autocast_dtype is not None:
+        logger.info(f"Using MP autocast with dtype: {mode_cfg.autocast_dtype}")
     else:
         logger.info("Using full precision (no autocast)")
 
@@ -576,8 +601,8 @@ if __name__ == "__main__":
     else:
         with torch.no_grad():
             model.eval()
-            if mode_cfg.mp_dtype is not None:
-                with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
+            if mode_cfg.autocast_dtype is not None:
+                with torch.autocast(device_type="cuda", dtype=mode_cfg.autocast_dtype):
                     init_train_acc = accuracy(model, train_eval_loader)
                     init_val_acc = accuracy(model, test_loader)
             else:
@@ -620,9 +645,9 @@ if __name__ == "__main__":
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
 
-        if mode_cfg.mp_dtype is not None:
+        if mode_cfg.autocast_dtype is not None:
             #print('Using autocast with dtype:', mode_cfg.autocast_dtype)
-            with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
+            with torch.autocast(device_type="cuda", dtype=mode_cfg.autocast_dtype):
                 logits = model(x)
                 loss = criterion(logits, y)
         else:
@@ -672,8 +697,8 @@ if __name__ == "__main__":
             else:
                 with torch.no_grad():
                     model.eval()
-                    if mode_cfg.mp_dtype is not None:
-                        with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype):
+                    if mode_cfg.autocast_dtype is not None:
+                        with torch.autocast(device_type="cuda", dtype=mode_cfg.autocast_dtype):
                             train_acc = accuracy(model, train_eval_loader)
                             val_acc = accuracy(model, test_loader)
                     else:
@@ -728,8 +753,8 @@ if __name__ == "__main__":
     train_peak_mem_mb = train_step_peak_mem_mb if device.type == "cuda" else 0.0
 
     with torch.no_grad():
-        if mode_cfg.mp_dtype is not None: 
-            with torch.autocast(device_type="cuda", dtype=mode_cfg.mp_dtype): 
+        if mode_cfg.autocast_dtype is not None:
+            with torch.autocast(device_type="cuda", dtype=mode_cfg.autocast_dtype):
                 inference_time_s, inference_peak_mem_mb, acc = measure_inference(
                     model,
                     test_loader,

@@ -23,6 +23,7 @@ EPOCH_RE = re.compile(
 )
 MODE_RE = re.compile(r"ModeConfig\(name='([^']+)'")
 GRADED_RE = re.compile(r"graded_time=(True|False)", re.IGNORECASE)
+PREDICTOR_CORRECTOR_RE = re.compile(r"predictor_corrector=(True|False)", re.IGNORECASE)
 METRIC_RE = r"(?:[0-9.eE+-]+|nan|inf|-inf)"
 FINAL_RE = re.compile(
     r"Final Results\s+\|\s+"
@@ -60,6 +61,10 @@ def parse_log(log_path: Path) -> dict:
         graded_match = GRADED_RE.search(text)
         if graded_match and graded_match.group(1).lower() == "true":
             mode_name = f"graded-{mode_name}"
+
+    corrector_match = PREDICTOR_CORRECTOR_RE.search(text)
+    if corrector_match and corrector_match.group(1).lower() == "true":
+        mode_name = f"pc-{mode_name}"
 
     epochs = []
     train_mse = []

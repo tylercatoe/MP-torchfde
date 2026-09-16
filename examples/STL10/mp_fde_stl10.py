@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--memory", type=int, default=-1, help="Memory for FDE adjoint (-1 for full)")
     parser.add_argument("--return_history", action="store_true", help="Return full state history from FDE solver")
     parser.add_argument("--graded_time", action="store_true", help="Use graded time discretization for FDE integration")
+    parser.add_argument("--predictor_corrector", action="store_true", help="Use the predictor-corrector update instead of the predictor-only update")
 
     # Multi-term FDE parameters
     parser.add_argument("--multi_beta", type=float, nargs="+", default=None, help="Fractional orders for multi-term FDE")
@@ -104,6 +105,7 @@ class FDEConfig:
     dtype_hi: Optional[torch.dtype] = None
     mp_dtype: Optional[torch.dtype] = None
     graded_time: bool = False
+    predictor_corrector: bool = False
 
     # Multi-term FDE settings
     multi_beta: Optional[List[float]] = None
@@ -120,6 +122,7 @@ class ModeConfig:
     dtype_hi: Optional[torch.dtype] = None
     mp_dtype: Optional[torch.dtype] = None
     graded_time: bool = False
+    predictor_corrector: bool = False
 
 
 # =============================================================================
@@ -198,6 +201,7 @@ class FDEBlock(nn.Module):
             "dtype_hi": cfg.dtype_hi,
             "mp_dtype": cfg.mp_dtype,
             "graded_time": cfg.graded_time,
+            "predictor_corrector": cfg.predictor_corrector,
         }
 
         beta = torch.tensor(cfg.beta, device=x.device, dtype=x.dtype)
@@ -218,6 +222,7 @@ class FDEBlock(nn.Module):
         base = f"beta={cfg.beta}, T={cfg.T}, step_size={cfg.step_size}, method='{cfg.method}'"
         base += f", memory={cfg.memory}, return_history={cfg.return_history}"
         base += f", graded_time={cfg.graded_time}"
+        base += f", predictor_corrector={cfg.predictor_corrector}"
 
         return base
 
@@ -526,6 +531,11 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
         mp_scaler_mode = args.mp_loss_scaler
 
     mode = args.mode
+    if (args.graded_time or args.predictor_corrector) and mode == "direct":
+        raise ValueError("--graded_time and --predictor_corrector require an adjoint mode with --adjoint_method predictor-f")
+    if (args.graded_time or args.predictor_corrector) and args.adjoint_method != "predictor-f":
+        raise ValueError("--graded_time and --predictor_corrector are only supported with --adjoint_method predictor-f")
+
     if mode == "direct":
         return ModeConfig(
             name="direct",
@@ -533,7 +543,9 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=direct_method,
             autocast_dtype=None,
             loss_scaler=False,
-            mp_dtype=mp_dtype,
+            mp_dtype=torch.float32,
+            graded_time=False,
+            predictor_corrector=False,
         )
     elif mode == "adjoint":
         return ModeConfig(
@@ -542,14 +554,18 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             method=args.adjoint_method,
             autocast_dtype=None,
             loss_scaler=False,
-            mp_dtype=mp_dtype,
-            graded_time=args.graded_time
+            mp_dtype=torch.float32,
+            graded_time=args.graded_time,
+            predictor_corrector=args.predictor_corrector,
         )
     elif mode == "adjoint-mixed":
         autocast_dtype = mp_dtype if device.type == "cuda" else None
         scaler: Any = False
         if device.type == "cuda" and mp_scaler_mode == "dynamic" and mp_dtype == torch.float16:
-            from torchfde import DynamicScaler
+            if args.adjoint_method == "predictor-f":
+                from rampde import DynamicScaler
+            else:
+                from torchfde import DynamicScaler
             
             scaler = DynamicScaler(dtype_low=torch.float16)
 
@@ -560,7 +576,8 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             autocast_dtype=autocast_dtype,
             loss_scaler=scaler,
             mp_dtype=mp_dtype,
-            graded_time=args.graded_time
+            graded_time=args.graded_time,
+            predictor_corrector=args.predictor_corrector,
         )
         
     elif mode == "adjoint-mixed-bfloat":
@@ -572,7 +589,8 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
             autocast_dtype=autocast_dtype,
             loss_scaler=False,
             mp_dtype=mp_dtype,
-            graded_time=args.graded_time
+            graded_time=args.graded_time,
+            predictor_corrector=args.predictor_corrector,
         )
     else:
         raise ValueError(f"Invalid mode '{mode}'.")
@@ -580,7 +598,7 @@ def build_mode_configs(args: argparse.Namespace, device: torch.device) -> ModeCo
 
 def build_solver(mode_config: ModeConfig):
     if mode_config.use_adjoint:
-        if mode_config.mp_dtype is not None:
+        if mode_config.method == "predictor-f":
             from rampde import predictor_fdeint
             def solver(func, y0, beta, t, step_size, method, options=None):
                 return predictor_fdeint(
@@ -592,6 +610,7 @@ def build_solver(mode_config: ModeConfig):
                     loss_scaler=mode_config.loss_scaler,
                     adj_dtype=mode_config.mp_dtype,
                     graded_time=mode_config.graded_time,
+                    predictor_corrector=mode_config.predictor_corrector,
                 )
             return solver
         else: 
@@ -674,6 +693,8 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
 
     if mode_cfg.graded_time:
         logger.info("Using graded time discretization for FDE integration")
+    if mode_cfg.predictor_corrector:
+        logger.info("Using predictor-corrector FDE updates")
 
     data_gen = inf_generator(train_loader)
     best_acc = 0.0
@@ -688,6 +709,7 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
         return_history=args.return_history,
         dtype_hi=train_loader.dataset[0][0].dtype,
         graded_time=mode_cfg.graded_time,
+        predictor_corrector=mode_cfg.predictor_corrector,
         mp_dtype=mode_cfg.mp_dtype,
     )
 
@@ -698,6 +720,7 @@ def train(args: argparse.Namespace, mode_cfg: ModeConfig, device: torch.device, 
         f"  step_size={fde_config.step_size},"
         f"  method={fde_config.method},"
         f"  graded_time={fde_config.graded_time},"
+        f"  predictor_corrector={fde_config.predictor_corrector},"
     )
 
     fdeint_solver = build_solver(mode_cfg)

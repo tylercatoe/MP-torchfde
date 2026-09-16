@@ -45,6 +45,7 @@ MEMORY="${MEMORY:--1}"
 DATA_AUG="${DATA_AUG:-0}"
 BENCHMARK_ONLY="${BENCHMARK_ONLY:-0}"
 GRADED_TIME="${GRADED_TIME:-FALSE}"
+PREDICTOR_CORRECTOR="${PREDICTOR_CORRECTOR:-FALSE}"
 
 graded_time_arg=()
 
@@ -56,6 +57,19 @@ case "${GRADED_TIME,,}" in
     ;;
   *)
     echo "ERROR: Invalid GRADED_TIME=$GRADED_TIME"
+    exit 1
+    ;;
+esac
+
+predictor_corrector_arg=()
+case "${PREDICTOR_CORRECTOR,,}" in
+  true|1|yes)
+    predictor_corrector_arg=(--predictor_corrector)
+    ;;
+  false|0|no|"")
+    ;;
+  *)
+    echo "ERROR: Invalid PREDICTOR_CORRECTOR=$PREDICTOR_CORRECTOR"
     exit 1
     ;;
 esac
@@ -107,6 +121,8 @@ echo "Conda env: $ENV_NAME"
 echo "Driver: $driver_script"
 echo "Mode: $MODE"
 echo "Epochs: $EPOCHS"
+echo "Graded time: $GRADED_TIME"
+echo "Predictor-corrector: $PREDICTOR_CORRECTOR"
 
 conda run -n "$ENV_NAME" python -u "$driver_script" \
   --mode "$MODE" \
@@ -129,5 +145,6 @@ conda run -n "$ENV_NAME" python -u "$driver_script" \
   --seed "$SEED" \
   --gpu 0 \
   "${graded_time_arg[@]}" \
+  "${predictor_corrector_arg[@]}" \
   $benchmark_only_arg \
   $data_aug_arg

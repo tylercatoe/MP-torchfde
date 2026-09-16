@@ -46,6 +46,7 @@ TRAIN_SIZE="${TRAIN_SIZE:-4000}"
 TIME_BINS="${TIME_BINS:-4}"
 UNSTABLE="${UNSTABLE:-0}"
 GRADED_TIME="${GRADED_TIME:-FALSE}"
+PREDICTOR_CORRECTOR="${PREDICTOR_CORRECTOR:-FALSE}"
 
 graded_time_arg=()
 
@@ -57,6 +58,19 @@ case "${GRADED_TIME,,}" in
     ;;
   *)
     echo "ERROR: Invalid GRADED_TIME=$GRADED_TIME"
+    exit 1
+    ;;
+esac
+
+predictor_corrector_arg=()
+case "${PREDICTOR_CORRECTOR,,}" in
+  true|1|yes)
+    predictor_corrector_arg=(--predictor_corrector)
+    ;;
+  false|0|no|"")
+    ;;
+  *)
+    echo "ERROR: Invalid PREDICTOR_CORRECTOR=$PREDICTOR_CORRECTOR"
     exit 1
     ;;
 esac
@@ -99,6 +113,8 @@ echo "Driver: $driver_script"
 echo "Mode: $MODE"
 echo "Epochs: $EPOCHS"
 echo "Data root: $DATA_ROOT"
+echo "Graded time: $GRADED_TIME"
+echo "Predictor-corrector: $PREDICTOR_CORRECTOR"
 
 # Optional one-job STL10 download setup.
 if [ "$DOWNLOAD_DATA" = "1" ]; then
@@ -152,4 +168,5 @@ conda run -n "$ENV_NAME" python -u "$driver_script" \
   --time-bins "$TIME_BINS" \
   "${repro_args[@]}" \
   "${graded_time_arg[@]}" \
+  "${predictor_corrector_arg[@]}" \
   $unstable_arg
