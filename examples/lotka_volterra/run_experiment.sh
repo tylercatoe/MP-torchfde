@@ -13,6 +13,23 @@ LR="${LR:-0.01}"
 SEED="${SEED:-42}"
 GPU="${GPU:-0}"
 ENV_NAME="${ENV_NAME:-torch28}"
+PREDICTOR_CORRECTOR="${PREDICTOR_CORRECTOR:-0}"
+RESULTS_DIR="${RESULTS_DIR:-results}"
+
+method_args=()
+case "${PREDICTOR_CORRECTOR,,}" in
+    1|true|yes)
+        method="predictor-corrector"
+        method_args+=(--predictor_corrector)
+        ;;
+    0|false|no)
+        method="predictor"
+        ;;
+    *)
+        echo "PREDICTOR_CORRECTOR must be 0/1, false/true, or no/yes." >&2
+        exit 2
+        ;;
+esac
 
 if command -v conda >/dev/null 2>&1; then
     PYTHON_CMD=(conda run --no-capture-output -n "$ENV_NAME" python)
@@ -32,18 +49,19 @@ common_args=(
     --gpu "$GPU"
 )
 
-echo "=== Lotka--Volterra uniform/graded predictor-corrector experiment ==="
+echo "=== Lotka--Volterra uniform/graded $method experiment ==="
 echo "niters=$NITERS n_train=$NTRAIN n_val=$NVAL noise=$NOISE lr=$LR seed=$SEED env=$ENV_NAME"
 
 for init_regime in near_true worse; do
     for precision in fp32 fp16; do
         for mesh in uniform graded; do
-            output="results/${init_regime}/${mesh}_${precision}"
-            echo "--- init=$init_regime mesh=$mesh precision=$precision ---"
+            output="${RESULTS_DIR}/${init_regime}/${mesh}_${precision}"
+            echo "--- init=$init_regime mesh=$mesh method=$method precision=$precision ---"
             "${PYTHON_CMD[@]}" train_lotka_volterra.py \
                 --init-regime "$init_regime" \
                 --mesh "$mesh" \
                 --precision "$precision" \
+                "${method_args[@]}" \
                 "${common_args[@]}" \
                 --save "$output"
         done
@@ -52,5 +70,5 @@ done
 
 echo "=== Runs complete; creating comparison files ==="
 "${PYTHON_CMD[@]}" compare_results.py \
-    --output-dir results \
-    results/*/*/results.json
+    --output-dir "$RESULTS_DIR" \
+    "$RESULTS_DIR"/*/*/results.json

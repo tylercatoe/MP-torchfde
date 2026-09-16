@@ -9,10 +9,9 @@ The experiment estimates the positive parameters [a, b, c, d] in
 from noisy terminal observations.  Every run recreates exactly the same
 training/validation data and starts from exactly the same parameter values.
 
-The uniform and graded cases both use the predictor--corrector recurrence.
-This example constructs each time grid explicitly and independently enables
-the solver's predictor--corrector branch, keeping the comparison focused on
-mesh grading.
+The mesh and integration method are independent. By default, the uniform and
+graded cases both use the product-rectangle predictor. Passing
+``--predictor_corrector`` enables the corrector on either mesh.
 """
 
 import argparse
@@ -114,7 +113,7 @@ def make_tspan(
     )
 
 
-def solve_predictor_corrector(
+def solve_model(
     func: nn.Module,
     y0: torch.Tensor,
     beta: float,
@@ -122,15 +121,24 @@ def solve_predictor_corrector(
     step_size: float,
     mesh: str,
     precision: str,
+    predictor_corrector: bool,
 ) -> torch.Tensor:
-    """Solve using the same predictor--corrector method on either mesh."""
+    """Solve with the selected mesh and independently selected method."""
     tspan = make_tspan(t_end, step_size, beta, mesh, y0.device)
     params = tuple(func.parameters())
     graded_time = mesh == "graded"
 
     if precision == "fp32":
         return PredictorFDESolverUnscaled.apply(
-            func, y0, tspan, beta, None, None, graded_time, True, *params
+            func,
+            y0,
+            tspan,
+            beta,
+            None,
+            None,
+            graded_time,
+            predictor_corrector,
+            *params,
         )
 
     if precision == "fp16":
@@ -145,7 +153,7 @@ def solve_predictor_corrector(
                 torch.float16,
                 False,
                 graded_time,
-                True,
+                predictor_corrector,
                 *params,
             )
         return out.float()
@@ -214,6 +222,10 @@ def train(args: argparse.Namespace) -> Dict:
         "experiment": "lotka_volterra_mesh_comparison",
         "init_regime": args.init_regime,
         "mesh": args.mesh,
+        "predictor_corrector": args.predictor_corrector,
+        "method": (
+            "predictor-corrector" if args.predictor_corrector else "predictor"
+        ),
         "precision": args.precision,
         "beta": args.beta,
         "t_end": args.t_end,
@@ -235,7 +247,8 @@ def train(args: argparse.Namespace) -> Dict:
     }
 
     print(
-        f"Device: {device} | mesh={args.mesh} | precision={args.precision} "
+        f"Device: {device} | mesh={args.mesh} | method={results['method']} "
+        f"| precision={args.precision} "
         f"| beta={args.beta} | T={args.t_end}"
     )
     print(f"{'Iter':>6} {'Train loss':>13} {'Val loss':>13} "
@@ -247,9 +260,9 @@ def train(args: argparse.Namespace) -> Dict:
         torch.cuda.reset_peak_memory_stats(device)
         start = time.perf_counter()
 
-        prediction = solve_predictor_corrector(
+        prediction = solve_model(
             model, y0_train, args.beta, args.t_end, args.step_size,
-            args.mesh, args.precision
+            args.mesh, args.precision, args.predictor_corrector
         )
         train_loss = criterion(prediction, target_train)
         train_loss.backward()
@@ -261,9 +274,9 @@ def train(args: argparse.Namespace) -> Dict:
 
         if iteration % args.log_freq == 0 or iteration == 1 or iteration == args.niters:
             with torch.no_grad():
-                val_prediction = solve_predictor_corrector(
+                val_prediction = solve_model(
                     model, y0_val, args.beta, args.t_end, args.step_size,
-                    args.mesh, args.precision
+                    args.mesh, args.precision, args.predictor_corrector
                 )
                 val_loss = criterion(val_prediction, target_val)
                 learned = model.params.detach()
@@ -296,6 +309,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--mesh", choices=["uniform", "graded"], required=True)
     parser.add_argument("--precision", choices=["fp32", "fp16"], required=True)
+    parser.add_argument(
+        "--predictor_corrector",
+        action="store_true",
+        help="Enable the corrector; otherwise use the product-rectangle predictor",
+    )
     parser.add_argument("--init-regime", choices=sorted(INITIALIZATIONS), default="near_true", help="Initial parameter regime used for optimization")
     parser.add_argument("--niters", type=int, default=500)
     parser.add_argument("--log_freq", type=int, default=25)

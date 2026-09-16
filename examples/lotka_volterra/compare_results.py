@@ -5,6 +5,7 @@ import argparse
 import csv
 import glob
 import json
+import math
 import os
 from typing import Dict, List
 
@@ -21,6 +22,7 @@ def load_summary(path: str, threshold: float) -> Dict:
     return {
         "init_regime": data["init_regime"],
         "mesh": data["mesh"],
+        "method": data.get("method", "predictor-corrector"),
         "precision": data["precision"],
         "beta": data["beta"],
         "step_size": data["step_size"],
@@ -71,6 +73,30 @@ def _estimated_time(records: List[Dict]) -> List[float]:
         return []
     mean_time = sum(item["iter_time_s"] for item in records) / len(records)
     return [item["iter"] * mean_time for item in records]
+
+
+def _parameter_history(run: Dict) -> tuple[List[int], List[List[float]]]:
+    """Return parameter history, including the saved initialization at step 0."""
+    records = run["iterations"]
+    iterations: List[int] = []
+    parameters: List[List[float]] = []
+
+    initial = run.get("initial_params", run.get("initialization_params"))
+    if initial is not None and (not records or records[0]["iter"] != 0):
+        iterations.append(0)
+        parameters.append(initial)
+
+    iterations.extend(record["iter"] for record in records)
+    parameters.extend(record["params"] for record in records)
+    return iterations, parameters
+
+
+def _line_label(run: Dict, include_method: bool) -> str:
+    """Build one consistent legend label for a solver configuration."""
+    label = f"{run['mesh']} / {run['precision'].upper()}"
+    if include_method:
+        label += f" / {run.get('method', 'predictor-corrector')}"
+    return label
 
 
 def write_convergence_plot(paths: List[str], output_dir: str, x_mode: str) -> bool:
@@ -139,6 +165,168 @@ def write_convergence_plot(paths: List[str], output_dir: str, x_mode: str) -> bo
     return True
 
 
+def write_parameter_trajectories_plot(paths: List[str], output_dir: str) -> bool:
+    """Plot each learned parameter against iteration and its true value."""
+    plt = _plotting_modules()
+    if plt is None:
+        return False
+
+    runs = [load_run(path) for path in paths]
+    preferred_order = ["near_true", "worse"]
+    available = {run["init_regime"] for run in runs}
+    initializations = [name for name in preferred_order if name in available]
+    initializations.extend(sorted(available - set(initializations)))
+    parameter_names = ("a", "b", "c", "d")
+    colors = {"uniform": "tab:blue", "graded": "tab:orange"}
+    line_styles = {"fp32": "-", "fp16": "--"}
+    methods = {run.get("method", "predictor-corrector") for run in runs}
+    include_method = len(methods) > 1
+
+    fig, axes = plt.subplots(
+        len(initializations),
+        len(parameter_names),
+        squeeze=False,
+        figsize=(4.0 * len(parameter_names), 3.5 * len(initializations)),
+        sharex=True,
+    )
+
+    for row_index, init_regime in enumerate(initializations):
+        matching = [run for run in runs if run["init_regime"] == init_regime]
+        for parameter_index, parameter_name in enumerate(parameter_names):
+            ax = axes[row_index][parameter_index]
+            for run in sorted(
+                matching, key=lambda item: (item["mesh"], item["precision"])
+            ):
+                iterations, parameter_history = _parameter_history(run)
+                values = [params[parameter_index] for params in parameter_history]
+                ax.plot(
+                    iterations,
+                    values,
+                    color=colors.get(run["mesh"], "black"),
+                    linestyle=line_styles.get(run["precision"], "-"),
+                    linewidth=1.8,
+                    label=_line_label(run, include_method),
+                )
+
+            true_value = matching[0]["true_params"][parameter_index]
+            ax.axhline(
+                true_value,
+                color="black",
+                linestyle=":",
+                linewidth=1.5,
+                label="true value",
+            )
+            ax.set_title(f"{parameter_name} (true={true_value:g})")
+            ax.set_xlabel("Training iteration")
+            ax.grid(True, alpha=0.25)
+            if parameter_index == 0:
+                ax.set_ylabel(f"{init_regime}\nParameter value")
+
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    unique = dict(zip(labels, handles))
+    fig.legend(
+        unique.values(),
+        unique.keys(),
+        loc="upper center",
+        ncol=min(5, len(unique)),
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.98),
+    )
+    fig.suptitle("Lotka--Volterra parameter convergence", y=1.02)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    fig.savefig(
+        os.path.join(output_dir, "parameter_trajectories.png"),
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+    return True
+
+
+def write_relative_parameter_error_plot(paths: List[str], output_dir: str) -> bool:
+    """Plot relative L2 parameter error against training iteration."""
+    plt = _plotting_modules()
+    if plt is None:
+        return False
+
+    runs = [load_run(path) for path in paths]
+    preferred_order = ["near_true", "worse"]
+    available = {run["init_regime"] for run in runs}
+    initializations = [name for name in preferred_order if name in available]
+    initializations.extend(sorted(available - set(initializations)))
+    colors = {"uniform": "tab:blue", "graded": "tab:orange"}
+    line_styles = {"fp32": "-", "fp16": "--"}
+    methods = {run.get("method", "predictor-corrector") for run in runs}
+    include_method = len(methods) > 1
+
+    fig, axes_grid = plt.subplots(
+        1,
+        len(initializations),
+        squeeze=False,
+        figsize=(5.5 * len(initializations), 4.2),
+        sharey=True,
+    )
+    axes = axes_grid[0]
+
+    for column_index, init_regime in enumerate(initializations):
+        ax = axes[column_index]
+        matching = [run for run in runs if run["init_regime"] == init_regime]
+        for run in sorted(
+            matching, key=lambda item: (item["mesh"], item["precision"])
+        ):
+            iterations, parameter_history = _parameter_history(run)
+            true_params = run["true_params"]
+            true_norm = math.sqrt(sum(value * value for value in true_params))
+            relative_errors = [
+                max(
+                    math.sqrt(
+                        sum(
+                            (value - truth) ** 2
+                            for value, truth in zip(params, true_params)
+                        )
+                    )
+                    / true_norm,
+                    1e-16,
+                )
+                for params in parameter_history
+            ]
+            ax.plot(
+                iterations,
+                relative_errors,
+                color=colors.get(run["mesh"], "black"),
+                linestyle=line_styles.get(run["precision"], "-"),
+                linewidth=1.8,
+                label=_line_label(run, include_method),
+            )
+
+        ax.set_yscale("log")
+        ax.set_xlabel("Training iteration")
+        ax.set_title(init_regime)
+        ax.grid(True, which="both", alpha=0.25)
+        if column_index == 0:
+            ax.set_ylabel(r"Relative parameter error $\|\theta-\theta^*\|_2/\|\theta^*\|_2$")
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    unique = dict(zip(labels, handles))
+    fig.legend(
+        unique.values(),
+        unique.keys(),
+        loc="upper center",
+        ncol=min(4, len(unique)),
+        frameon=False,
+        bbox_to_anchor=(0.5, 0.95),
+    )
+    fig.suptitle("Lotka--Volterra relative parameter error", y=1.03)
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
+    fig.savefig(
+        os.path.join(output_dir, "relative_parameter_error_vs_iteration.png"),
+        dpi=180,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+    return True
+
+
 def write_efficiency_plot(paths: List[str], output_dir: str, threshold: float) -> bool:
     """Write best-validation-loss versus runtime and peak memory."""
     plt = _plotting_modules()
@@ -169,7 +357,7 @@ def write_efficiency_plot(paths: List[str], output_dir: str, threshold: float) -
             )
             label = (
                 f"{run['precision'].upper()} / {run['init_regime']} / "
-                f"{run['mesh']}"
+                f"{run['mesh']} / {run.get('method', 'predictor-corrector')}"
             )
             ax.scatter(
                 x_value,
@@ -220,6 +408,7 @@ def write_markdown(rows: List[Dict], path: str, threshold: float) -> None:
         ("Initialization", "init_regime"),
         ("Initial parameters [a,b,c,d]", "initialization_params"),
         ("Mesh", "mesh"),
+        ("Method", "method"),
         ("Precision", "precision"),
         ("Final train loss", "final_train_loss"),
         ("Final val loss", "final_val_loss"),
@@ -232,7 +421,7 @@ def write_markdown(rows: List[Dict], path: str, threshold: float) -> None:
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("# Lotka--Volterra Uniform versus Graded Mesh\n\n")
         handle.write(
-            "Both mesh conditions use the predictor--corrector recurrence. "
+            "The numerical method used by each run is shown in the table. "
             "The data, initialization, beta, optimizer, and step size are shared.\n\n"
         )
         handle.write("| " + " | ".join(label for label, _ in columns) + " |\n")
@@ -276,6 +465,8 @@ def main() -> None:
     plots_written = [
         write_convergence_plot(paths, args.output_dir, "iteration"),
         write_convergence_plot(paths, args.output_dir, "time"),
+        write_parameter_trajectories_plot(paths, args.output_dir),
+        write_relative_parameter_error_plot(paths, args.output_dir),
         write_efficiency_plot(paths, args.output_dir, args.val_threshold),
     ]
 
@@ -284,6 +475,10 @@ def main() -> None:
     if all(plots_written):
         print(f"Wrote {os.path.join(args.output_dir, 'validation_loss_vs_iteration.png')}")
         print(f"Wrote {os.path.join(args.output_dir, 'validation_loss_vs_time.png')}")
+        print(f"Wrote {os.path.join(args.output_dir, 'parameter_trajectories.png')}")
+        print(
+            f"Wrote {os.path.join(args.output_dir, 'relative_parameter_error_vs_iteration.png')}"
+        )
         print(f"Wrote {os.path.join(args.output_dir, 'accuracy_cost_tradeoff.png')}")
     else:
         print("Plot files were skipped because matplotlib is unavailable.")

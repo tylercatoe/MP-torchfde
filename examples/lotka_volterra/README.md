@@ -10,9 +10,9 @@ D^β y = -y (b - d x)
 
 It compares a uniform mesh with the double-graded mesh, in both FP32 and
 FP16, from two parameter initializations: `near_true` and `worse`. Within each
-initialization regime, all four runs use the same predictor--corrector
-recurrence, optimizer, beta, data, and train/validation split. The experimental
-factors are initialization, mesh, and precision.
+initialization regime, all four runs use the same product-rectangle predictor,
+optimizer, beta, data, and train/validation split. The experimental factors
+are initialization, mesh, and precision.
 
 The synthetic targets are generated once per run from the same seeded initial
 conditions using a finer uniform predictor--corrector solve, then independent
@@ -33,6 +33,14 @@ NITERS=10 LOG_FREQ=5 ./run_experiment.sh
 ./run_experiment.sh
 ```
 
+The default experiment uses the predictor only. To run the same experiment
+with the predictor-corrector method, use a separate output directory so the
+predictor results are not overwritten:
+
+```bash
+PREDICTOR_CORRECTOR=1 RESULTS_DIR=results_predictor_corrector ./run_experiment.sh
+```
+
 The launcher runs eight cases:
 
 ```text
@@ -50,15 +58,21 @@ The `near_true` initialization is `[0.99, 0.48, 1.05, 0.33]`; the `worse`
 initialization is `[0.65, 0.75, 1.35, 0.18]`. The true parameters are
 `[1.0, 0.5, 1.0, 0.3]`.
 
-Results are stored in `results/<init_regime>/<mesh>_<precision>/results.json`.
-The launcher also creates:
+Results are stored in
+`<RESULTS_DIR>/<init_regime>/<mesh>_<precision>/results.json`, where
+`RESULTS_DIR` defaults to `results`.
+The launcher also creates the following files under `RESULTS_DIR`:
 
-- `results/comparison.csv`, which is convenient for pandas or custom plots;
-- `results/comparison.md`, a compact summary table.
-- `results/validation_loss_vs_iteration.png`, faceted convergence curves;
-- `results/validation_loss_vs_time.png`, the same curves against estimated
+- `comparison.csv`, which is convenient for pandas or custom plots;
+- `comparison.md`, a compact summary table.
+- `validation_loss_vs_iteration.png`, faceted convergence curves;
+- `validation_loss_vs_time.png`, the same curves against estimated
   elapsed time;
-- `results/accuracy_cost_tradeoff.png`, best validation loss versus runtime and
+- `parameter_trajectories.png`, the learned `a`, `b`, `c`, and `d`
+  trajectories with their true values;
+- `relative_parameter_error_vs_iteration.png`, relative L2 parameter error
+  on a logarithmic scale;
+- `accuracy_cost_tradeoff.png`, best validation loss versus runtime and
   peak GPU memory.
 
 The launcher uses the `torch28` conda environment by default. Override it with
