@@ -7,7 +7,7 @@ fractional differential equations (Diethelm et al. 2004; referred to as the
 
     D^β y(t) = f(t, y),  y(0) = y0,  β ∈ (0, 1)
 
-Update formula:
+Update formula (product-rectangle):
 
     U^n = U^0 + Σ_{j=0}^{n-1} d_{n,j} · f(t_j, U^j)
 
@@ -49,10 +49,10 @@ n > j), the exact reverse-mode adjoint of this scheme is:
     grad_y0 = Σ_{n=0}^{N-1} a_n                  (U^0 appears directly in every U^n)
 
 Each v_j requires a fresh weighted sum over all "future" adjoint states, so
-(like the forward pass) this is an O(N^2) computation. Remarkably, because
-d_{n,j} depends only on (n - j), the same per-step weight vector used in the
-forward convolution (Σ_j d_{k+1,j} f_j) is reused verbatim for the backward
-convolution (Σ_i d_{N-1-i,·} a_·) — see `_predictor_weights`.
+(like the forward pass) this is an O(N^2) computation. On a uniform mesh,
+d_{n,j} depends only on (n - j), so a per-step weight vector can be reused in
+reversed order. On a graded mesh, the corresponding coefficients are built
+from the reversed physical-time grid.
 """
 
 import math
@@ -97,16 +97,33 @@ def _predictor_weights(
     """
     Compute d_{k+1,j} for j = 0..k, i.e. the weight vector applied to the
     length-(k+1) history slice [h_0, ..., h_k] (f-history in the forward
-    pass, adjoint-history in the backward pass — the two are identical
-    because d_{n,j} depends only on n - j).
+    pass, adjoint-history in the backward pass).
 
-    If `graded_time` is True, the weights are adjusted to account for a graded time grid.
+    On a uniform mesh, ``C = h**beta / Gamma(beta + 1)`` and
 
-    If uniform time, returns a 1-D tensor of shape (k+1,):
         w[j] = C · [ (k+1-j)^β − (k-j)^β ],  j = 0..k
 
-    If graded time, returns a 1-D tensor of shape (k+1,) with weights computed based on the graded time mesh.
-        w[j] = C · [ ( (k+1)^r - (j)^r )^β − ( (k+1)^r - (j+1)^r )^β ],  j = 0..k
+    With ``graded_time=True``, ``C = 1 / Gamma(beta + 1)`` and the
+    coefficients are computed from the actual physical time points. For the
+    forward update at t_{k+1},
+
+        w[j] = C · [ (t_{k+1}-t_j)^β
+                         - (t_{k+1}-t_{j+1})^β ],  j = 0..k.
+
+    This is the exact integral of the product-rectangle approximation over
+    [t_j, t_{j+1}]:
+
+        1/Gamma(β) · integral((t_{k+1}-s)^(β-1), ds).
+
+    In the adjoint, ``tspan`` is the increasing reversed-time grid
+    s_i = T - t_{N-1-i}. At reversed step k, the returned entries are ordered
+    like the adjoint history [a_{N-1}, ..., a_{N-1-k}]. The
+    ``backward_time`` formula is therefore
+
+        C · [ (s_{k+1}-s_i)^β - (s_k-s_i)^β ],  i = 0..k,
+
+    which equals the original forward coefficient d_{n,j} for each future
+    state n and current target state j.
 
     No special-casing is needed at j=0 (unlike the L1 scheme): (k-j)^β = 0^β
     = 0 when j=k is well defined for β > 0.
@@ -114,25 +131,25 @@ def _predictor_weights(
     if graded_time:
         if tspan is None:
             raise ValueError("tspan is required for graded-time predictor weights")
-        t_next = tspan[k + 1]
-        t_left = tspan[: k + 1]
+        target_time = tspan[k + 1]
+        history_times = tspan[: k + 1]
         if backward_time:
-            t_prev = tspan[k]
+            previous_target_time = tspan[k]
             return C * (
-                torch.pow(t_next - t_left, beta_val)
-                - torch.pow(t_prev - t_left, beta_val)
+                torch.pow(target_time - history_times, beta_val)
+                - torch.pow(previous_target_time - history_times, beta_val)
             )
-        t_left_plus_1 = tspan[1: k + 2]
+        interval_right_times = tspan[1: k + 2]
         return C * (
-            torch.pow(t_next - t_left, beta_val)
-            - torch.pow(t_next - t_left_plus_1, beta_val)
+            torch.pow(target_time - history_times, beta_val)
+            - torch.pow(target_time - interval_right_times, beta_val)
         )
 
     j = torch.arange(0, k + 1, dtype=dtype, device=device)
     return C * (torch.pow(k + 1 - j, beta_val) - torch.pow(k - j, beta_val))
 
 # ============================================================================
-# Corrector weights computation for graded time
+# Corrector weights computation
 # ============================================================================
 
 def _corrector_weights(
@@ -144,22 +161,18 @@ def _corrector_weights(
     tspan: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Compute the corrector weights for the graded time predictor-corrector scheme.
+    Compute predictor-corrector weights from the supplied physical time grid.
 
-    If `graded_time` is True, the weights are adjusted to account for a graded time grid.
-
-    Returns a 1-D tensor of shape (k+1,) with weights computed based on the graded time mesh.
-        w[j] = C · [ ( (k+1)^r - (j)^r )^β − ( (k+1)^r - (j+1)^r )^β ],  j = 0..k
-
-    No special-casing is needed at j=0 (unlike the L1 scheme): (k-j)^β = 0^β
-    = 0 when j=k is well defined for β > 0.
+    The same physical-time formula supports uniform and nonuniform meshes.
+    It returns the left- and right-endpoint weights for the intervals ending
+    before the current local interval [t_k, t_{k+1}].
     """
     if k == 0:
         empty = torch.empty(0, dtype=dtype, device=device)
         return empty, empty
     
     if tspan is None:
-        raise ValueError("tspan is required for graded-time corrector weights")
+        raise ValueError("tspan is required for predictor-corrector weights")
     
     t_next = tspan[k + 1]
     t_left = tspan[: k]
@@ -192,27 +205,31 @@ def _predictor_forward_impl(
     dtype_hi: torch.dtype,
     dtype_low: torch.dtype,
     *, 
-    graded_time: bool = False
-) -> Tuple[torch.Tensor, torch.Tensor]:
+    graded_time: bool = False,
+    predictor_corrector: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     """
     Run the product-rectangle predictor forward with mixed precision.
-    Note that if we are using a graded mesh for better convergence, we use it with predictor-corrector
+    The mesh choice and integration rule are independent: ``graded_time``
+    selects nonuniform product-integration weights, while
+    ``predictor_corrector`` enables the piecewise-linear corrector.
 
     Args:
         func      : FDE RHS f(t, y)
         y0        : Initial condition, shape (*state)
-        tspan     : Equally-spaced time points, shape (N,)
+        tspan     : Uniform or graded time points, shape (N,)
         beta_val  : Fractional order as Python float
         dtype_hi  : High-precision dtype for weights and accumulation
         dtype_low : Low-precision dtype for function evaluation and f-history
-        graded_time : If True, use a graded time grid and predictor-corrector
+        graded_time : If True, use product-integration weights for ``tspan``.
+        predictor_corrector : If True, apply the corrector after each predictor.
 
     Returns:
         y_T         : Final solution U^{N-1}, shape (*state), dtype dtype_hi
         yt          : Full corrected y-trajectory buffer, shape (N, *state),
                       dtype dtype_low
-        predictor_t : Predictor trajectory P_n for graded predictor-corrector,
-                      or None for uniform predictor-only mode
+        predictor_t : Predictor trajectory P_n when predictor-corrector is used,
+                      otherwise None.
     """
     N = len(tspan)
     if graded_time:
@@ -230,7 +247,7 @@ def _predictor_forward_impl(
     yt[0] = y0.to(dtype_low)
 
     predictor_t = None
-    if graded_time:
+    if predictor_corrector:
         predictor_t = torch.empty(N, *y0.shape, dtype=dtype_low, device=device)
         predictor_t[0] = y0.to(dtype_low)
 
@@ -251,18 +268,20 @@ def _predictor_forward_impl(
 
         with autocast(device_type="cuda", enabled=False):
             if graded_time:
-                # For graded time, the coefficients are no longer only dependent on n-j, but we can still compute the weights for the current step.
+                # Nonuniform coefficients depend on the physical interval
+                # endpoints, not only on the index difference n-j.
                 weights = _predictor_weights(k, beta_val, C, dtype_hi, device, graded_time=graded_time, tspan=tspan)
             else:
                 weights = _predictor_weights(k, beta_val, C, dtype_hi, device)
             conv_sum = _weighted_history_sum(weights, fhist[: k + 1], out_dtype=dtype_hi)
             y_current = y0_hi + conv_sum
 
-        if graded_time:
+        if predictor_corrector:
             # Save P_{k+1} before replacing it with the corrected state.
             predictor_t[k + 1] = y_current.to(dtype_low)
 
-            # For graded time, we use predictor-corrector 
+            # Apply a piecewise-linear product-integration corrector on the
+            # same time grid used by the predictor.
             with autocast(device_type="cuda", dtype=dtype_low):
                 f_k_plus_1_Pred = func(tspan[k+1], y_current)
             with autocast(device_type="cuda", enabled=False):
@@ -368,7 +387,8 @@ def _predictor_backward_impl(
         # Uses the SAME weight formula as the forward pass (row k=r), since
         # d_{n,j} depends only on n-j — see _predictor_weights docstring.
         if graded_time:
-            # For graded time, the coefficients are no longer only dependent on n-j, but we can still compute the weights for the current reversed step.
+            # On the reversed grid, these entries are d_{n,target_j} for
+            # n=N-1,...,target_j+1, matching adj_buf[0:r+1].
             weights = _predictor_weights(
                 r,
                 beta_val,
@@ -528,7 +548,7 @@ def _predictor_corrector_backward_impl(
     check_finite: bool = False,
     adj_storage_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
-    """Exact discrete adjoint of the graded predictor-corrector recurrence.
+    """Exact discrete adjoint of the predictor-corrector recurrence.
 
     The forward graph for n = 1, ..., N-1 is:
 
@@ -661,7 +681,8 @@ class PredictorFDESolverBase(torch.autograd.Function):
     Backward: must be implemented by subclasses (exact discrete adjoint).
 
     Forward signature:
-        forward(ctx, func, y0, tspan, beta_val, adj_storage_dtype, loss_scaler, *params) -> y_T
+        forward(ctx, func, y0, tspan, beta_val, adj_storage_dtype,
+                loss_scaler, graded_time, predictor_corrector, *params) -> y_T
     """
 
     @staticmethod
@@ -675,6 +696,7 @@ class PredictorFDESolverBase(torch.autograd.Function):
         adj_storage_dtype: Optional[torch.dtype],
         loss_scaler: Any,
         graded_time: bool = False,
+        predictor_corrector: bool = False,
         *params: torch.Tensor,
     ) -> torch.Tensor:
         with torch.no_grad():
@@ -685,10 +707,17 @@ class PredictorFDESolverBase(torch.autograd.Function):
                 else dtype_hi
             )
             y_T, yt, predictor_t = _predictor_forward_impl(
-                func, y0, tspan, beta_val, dtype_hi, dtype_low, graded_time=graded_time
+                func,
+                y0,
+                tspan,
+                beta_val,
+                dtype_hi,
+                dtype_low,
+                graded_time=graded_time,
+                predictor_corrector=predictor_corrector,
             )
 
-        if graded_time:
+        if predictor_corrector:
             ctx.save_for_backward(yt, predictor_t, *params)
         else:
             ctx.save_for_backward(yt, *params)
@@ -699,6 +728,7 @@ class PredictorFDESolverBase(torch.autograd.Function):
         ctx.adj_storage_dtype = adj_storage_dtype
         ctx.loss_scaler = loss_scaler
         ctx.graded_time = graded_time
+        ctx.predictor_corrector = predictor_corrector
 
         return y_T
 
@@ -719,7 +749,7 @@ class PredictorFDESolverUnscaled(PredictorFDESolverBase):
     def backward(
         ctx: Any, at: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], ...]:
-        if ctx.graded_time:
+        if ctx.predictor_corrector:
             yt, predictor_t, *params = ctx.saved_tensors
         else:
             yt, *params = ctx.saved_tensors
@@ -732,7 +762,7 @@ class PredictorFDESolverUnscaled(PredictorFDESolverBase):
         )
 
         with torch.no_grad():
-            if ctx.graded_time:
+            if ctx.predictor_corrector:
                 grad_y0, grad_params = _predictor_corrector_backward_impl(
                     ctx.func, at, yt, predictor_t, ctx.tspan, ctx.beta_val,
                     params, dtype_hi, dtype_low,
@@ -745,11 +775,12 @@ class PredictorFDESolverUnscaled(PredictorFDESolverBase):
                     params, dtype_hi, dtype_low,
                     scale=None, check_finite=False,
                     adj_storage_dtype=ctx.adj_storage_dtype,
-                    graded_time=False,
+                    graded_time=ctx.graded_time,
                 )
 
-        # Signature: (func, y0, tspan, beta_val, adj_storage_dtype, loss_scaler, *params)
-        return (None, grad_y0, None, None, None, None, None, *grad_params)
+        # Signature: (func, y0, tspan, beta_val, adj_storage_dtype,
+        #             loss_scaler, graded_time, predictor_corrector, *params)
+        return (None, grad_y0, None, None, None, None, None, None, *grad_params)
 
 
 # ============================================================================
@@ -770,7 +801,7 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
     def backward(
         ctx: Any, at: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], ...]:
-        if ctx.graded_time:
+        if ctx.predictor_corrector:
             yt, predictor_t, *params = ctx.saved_tensors
         else:
             yt, *params = ctx.saved_tensors
@@ -795,7 +826,7 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
             while attempts < scaler.max_attempts:
                 try:
                     with torch.no_grad():
-                        if ctx.graded_time:
+                        if ctx.predictor_corrector:
                             grad_y0, grad_params = _predictor_corrector_backward_impl(
                                 ctx.func, at, yt, predictor_t, ctx.tspan, ctx.beta_val,
                                 params, dtype_hi, dtype_low,
@@ -808,7 +839,7 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
                                 params, dtype_hi, dtype_low,
                                 scale=scaler.S, check_finite=True,
                                 adj_storage_dtype=ctx.adj_storage_dtype,
-                                graded_time=False,
+                                graded_time=ctx.graded_time,
                             )
                     if _is_any_infinite((grad_y0, *grad_params)):
                         raise OverflowError("Non-finite gradients after adjoint solve.")
@@ -828,7 +859,7 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
             for name, p in ctx.func.named_parameters():
                 p.data = old_params[name]
 
-        return (None, grad_y0, None, None, None, None, None, *grad_params)
+        return (None, grad_y0, None, None, None, None, None, None, *grad_params)
 
 
 # ============================================================================
@@ -848,7 +879,7 @@ class PredictorFDESolverUnscaledSafe(PredictorFDESolverBase):
     def backward(
         ctx: Any, at: torch.Tensor
     ) -> Tuple[Optional[torch.Tensor], ...]:
-        if ctx.graded_time:
+        if ctx.predictor_corrector:
             yt, predictor_t, *params = ctx.saved_tensors
         else:
             yt, *params = ctx.saved_tensors
@@ -862,7 +893,7 @@ class PredictorFDESolverUnscaledSafe(PredictorFDESolverBase):
 
         try:
             with torch.no_grad():
-                if ctx.graded_time:
+                if ctx.predictor_corrector:
                     grad_y0, grad_params = _predictor_corrector_backward_impl(
                         ctx.func, at, yt, predictor_t, ctx.tspan, ctx.beta_val,
                         params, dtype_hi, dtype_low,
@@ -875,7 +906,7 @@ class PredictorFDESolverUnscaledSafe(PredictorFDESolverBase):
                         params, dtype_hi, dtype_low,
                         scale=None, check_finite=True,
                         adj_storage_dtype=ctx.adj_storage_dtype,
-                        graded_time=False,
+                        graded_time=ctx.graded_time,
                     )
             if _is_any_infinite((grad_y0, *grad_params)):
                 raise OverflowError("Non-finite gradients after adjoint solve.")
@@ -883,7 +914,7 @@ class PredictorFDESolverUnscaledSafe(PredictorFDESolverBase):
             grad_y0 = torch.full_like(at, float("inf"))
             grad_params = tuple(torch.full_like(p, float("inf")) for p in params)
 
-        return (None, grad_y0, None, None, None, None, None, *grad_params)
+        return (None, grad_y0, None, None, None, None, None, None, *grad_params)
 
 
 # ============================================================================
@@ -943,6 +974,7 @@ def predictor_fdeint(
     loss_scaler: ScalerType = None,
     adj_dtype: Optional[torch.dtype] = None,
     graded_time: bool = False,
+    predictor_corrector: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, ...]]:
     """
     Solve a Caputo fractional ODE with the mixed-precision Volterra
@@ -953,8 +985,11 @@ def predictor_fdeint(
 
     using:
         U^n = U^0 + Σ_{j=0}^{n-1} d_{n,j} f(t_j, U^j),
-        d_{n,j} = h^β / Γ(β+1) · [(n-j)^β - (n-j-1)^β] on a uniform time grid, or a graded time grid we use
-        d_{n,j} = C · [ ( (n)^r - (j)^r )^β − ( (n)^r - (j+1)^r )^β ] with r = (2-β)/β and C = T^β / ( Γ(β+1) • N^(rβ) ).
+        d_{n,j} = [(t_n-t_j)^β - (t_n-t_{j+1})^β] / Γ(β+1).
+
+    On a uniform grid this reduces to
+        d_{n,j} = h^β / Γ(β+1)
+                  · [(n-j)^β - (n-j-1)^β].
 
     with automatic solver selection based on precision, and the EXACT
     discrete adjoint for backward (not the continuous-adjoint approximation
@@ -965,7 +1000,9 @@ def predictor_fdeint(
         y0         : Initial condition — Tensor or tuple of Tensors.
         beta       : Fractional order in (0, 1).
         t          : End time (float or scalar Tensor, must be > 0).
-        step_size  : Uniform time step (float or scalar Tensor, must be < t).
+        step_size  : Nominal time resolution (float or scalar Tensor, must be
+                     less than t). On a graded mesh it determines the number
+                     of intervals rather than a constant physical step size.
         loss_scaler: Mixed-precision scaling strategy:
                      - None  : auto-select (DynamicScaler for float16)
                      - False : disable internal scaling
@@ -973,6 +1010,11 @@ def predictor_fdeint(
         adj_dtype  : Dtype for storing the adjoint history during backward.
                      - None (default) : use dtype_hi (float32) — safest
                      - torch.float16 / torch.bfloat16 : halve adjoint memory
+        graded_time: Use the symmetric graded mesh and its nonuniform
+                     product-integration weights. This does not enable the
+                     corrector.
+        predictor_corrector: Apply the piecewise-linear corrector on the
+                             selected uniform or graded mesh.
 
     Returns:
         Solution y(t) — same structure as y0 (Tensor or tuple of Tensors).
@@ -1048,7 +1090,17 @@ def predictor_fdeint(
 
     params = tuple(func.parameters())
 
-    solution = solver_class.apply(func, y0, tspan, beta_val, adj_dtype, loss_scaler, graded_time, *params)
+    solution = solver_class.apply(
+        func,
+        y0,
+        tspan,
+        beta_val,
+        adj_dtype,
+        loss_scaler,
+        graded_time,
+        predictor_corrector,
+        *params,
+    )
 
     if y0_is_tuple:
         return _tensor_to_tuple(solution, numels, shapes)

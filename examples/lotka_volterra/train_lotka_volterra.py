@@ -10,10 +10,9 @@ from noisy terminal observations.  Every run recreates exactly the same
 training/validation data and starts from exactly the same parameter values.
 
 The uniform and graded cases both use the predictor--corrector recurrence.
-The solver's public API historically uses ``graded_time=False`` for the
-predictor-only method, so this example constructs the time grid explicitly
-and calls the exported solver class with its predictor--corrector branch for
-both meshes.  This keeps the comparison focused on mesh grading.
+This example constructs each time grid explicitly and independently enables
+the solver's predictor--corrector branch, keeping the comparison focused on
+mesh grading.
 """
 
 import argparse
@@ -127,12 +126,11 @@ def solve_predictor_corrector(
     """Solve using the same predictor--corrector method on either mesh."""
     tspan = make_tspan(t_end, step_size, beta, mesh, y0.device)
     params = tuple(func.parameters())
+    graded_time = mesh == "graded"
 
     if precision == "fp32":
-        # ``graded_time=True`` selects the predictor--corrector branch.  The
-        # explicitly supplied uniform tspan makes its mesh uniform here.
         return PredictorFDESolverUnscaled.apply(
-            func, y0, tspan, beta, None, None, True, *params
+            func, y0, tspan, beta, None, None, graded_time, True, *params
         )
 
     if precision == "fp16":
@@ -140,7 +138,15 @@ def solve_predictor_corrector(
             raise RuntimeError("The fp16 experiment requires a CUDA GPU.")
         with torch.autocast(device_type="cuda", dtype=torch.float16):
             out = PredictorFDESolverUnscaledSafe.apply(
-                func, y0, tspan, beta, torch.float16, False, True, *params
+                func,
+                y0,
+                tspan,
+                beta,
+                torch.float16,
+                False,
+                graded_time,
+                True,
+                *params,
             )
         return out.float()
 
@@ -172,6 +178,7 @@ def generate_data(args: argparse.Namespace, device: torch.device) -> Tuple[torch
             args.beta,
             None,
             None,
+            False,
             True,
         )
 
@@ -286,17 +293,10 @@ def train(args: argparse.Namespace) -> Dict:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--mesh", choices=["uniform", "graded"], required=True)
     parser.add_argument("--precision", choices=["fp32", "fp16"], required=True)
-    parser.add_argument(
-        "--init-regime",
-        choices=sorted(INITIALIZATIONS),
-        default="near_true",
-        help="Initial parameter regime used for optimization",
-    )
+    parser.add_argument("--init-regime", choices=sorted(INITIALIZATIONS), default="near_true", help="Initial parameter regime used for optimization")
     parser.add_argument("--niters", type=int, default=500)
     parser.add_argument("--log_freq", type=int, default=25)
     parser.add_argument("--n_train", type=int, default=50)
