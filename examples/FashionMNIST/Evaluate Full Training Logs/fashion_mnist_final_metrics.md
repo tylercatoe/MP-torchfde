@@ -12,6 +12,7 @@ direct               | 0.9997          | 0.0798        | 0.0748       | 221.06  
 ```
 
 Memory savings: $27.6\\%$ between direct and adjoint MP (adjoint MP uses less)
+Note that this scales with $T$, see below for savings of up to $86.56\\%$.
 
 
 Log files:
