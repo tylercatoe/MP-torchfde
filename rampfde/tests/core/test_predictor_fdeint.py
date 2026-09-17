@@ -999,6 +999,84 @@ class TestPredictorFDEintAdjointConsistency(unittest.TestCase):
                             "DynamicScaler(float32) gradients differ from unscaled")
         self.assertGreater(len(scaler.scale_history), 0, "DynamicScaler was never called")
 
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for float16 autocast")
+    def test_dynamic_scaler_preserves_small_parameter_gradient(self):
+        """Scaling must protect a small FP16 parameter VJP from underflow."""
+
+        class AutocastLinearDecay(nn.Module):
+            def __init__(self, weight: float, *, dtype, device):
+                super().__init__()
+                self.weight = nn.Parameter(
+                    torch.tensor([weight], dtype=dtype, device=device)
+                )
+
+            def forward(self, t, y):
+                # Elementwise multiplication is not necessarily autocast, so
+                # explicitly create low-precision compute tensors while the
+                # master parameter remains float32.
+                if torch.is_autocast_enabled():
+                    low_dtype = torch.get_autocast_dtype("cuda")
+                    return -self.weight.to(low_dtype) * y.to(low_dtype)
+                return -self.weight * y
+
+        beta = 0.7
+        final_time = 2.0
+        step_size = 0.01
+        initial_value = 1.0e-3
+
+        ref_func = AutocastLinearDecay(
+            1.0, dtype=torch.float64, device="cpu"
+        )
+        ref_y0 = torch.tensor(
+            [initial_value], dtype=torch.float64, requires_grad=True
+        )
+        ref_steps = int(round(final_time / step_size)) + 1
+        ref_tspan = torch.linspace(
+            0.0, final_time, ref_steps, dtype=torch.float64
+        )
+        ref_out = _reference_predictor(
+            ref_func, ref_y0, beta, ref_tspan
+        )
+        (0.5 * ref_out.square().sum()).backward()
+        ref_weight_grad = _grad(ref_func.weight).detach()
+
+        dyn_func = AutocastLinearDecay(
+            1.0, dtype=torch.float32, device="cuda"
+        )
+        dyn_y0 = torch.tensor(
+            [initial_value], dtype=torch.float32, device="cuda",
+            requires_grad=True,
+        )
+        scaler = DynamicScaler(dtype_low=torch.float16)
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            dyn_out = predictor_fdeint(
+                dyn_func,
+                dyn_y0,
+                beta=beta,
+                t=final_time,
+                step_size=step_size,
+                loss_scaler=scaler,
+                adj_dtype=torch.float32,
+            )
+            dyn_loss = 0.5 * dyn_out.float().square().sum()
+        dyn_loss.backward()
+        dyn_weight_grad = _grad(dyn_func.weight).detach().cpu().double()
+
+        self.assertNotEqual(
+            dyn_weight_grad.item(),
+            0.0,
+            "Dynamically scaled parameter gradient underflowed to zero",
+        )
+        relative_error = (
+            (dyn_weight_grad - ref_weight_grad).norm()
+            / ref_weight_grad.norm().clamp_min(1e-30)
+        )
+        self.assertLess(
+            relative_error.item(),
+            5e-2,
+            f"Scaled parameter gradient relative error is {relative_error.item():.3e}",
+        )
+
 
 # ============================================================================
 # 6. Dtype preservation

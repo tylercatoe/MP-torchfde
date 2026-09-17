@@ -817,47 +817,44 @@ class PredictorFDESolverDynamic(PredictorFDESolverBase):
         if scaler.S is None:
             scaler.init_scaling(at.to(dtype_hi))
 
-        old_params = {name: p.data for name, p in ctx.func.named_parameters()}
-        for _, p in ctx.func.named_parameters():
-            p.data = p.data.to(dtype_low)
+        # Keep the master parameters in their original (normally float32)
+        # dtype. The RHS evaluations below already run under autocast, which
+        # creates low-precision operands for eligible operations while keeping
+        # parameter VJPs connected to the original master tensors. Mutating
+        # ``p.data`` to float16 here would make each parameter VJP float16;
+        # descaling that VJP could then underflow and defeat the scaler.
+        attempts = 0
+        while attempts < scaler.max_attempts:
+            try:
+                with torch.no_grad():
+                    if ctx.predictor_corrector:
+                        grad_y0, grad_params = _predictor_corrector_backward_impl(
+                            ctx.func, at, yt, predictor_t, ctx.tspan, ctx.beta_val,
+                            params, dtype_hi, dtype_low,
+                            scale=scaler.S, check_finite=True,
+                            adj_storage_dtype=ctx.adj_storage_dtype,
+                        )
+                    else:
+                        grad_y0, grad_params = _predictor_backward_impl(
+                            ctx.func, at, yt, ctx.tspan, ctx.beta_val,
+                            params, dtype_hi, dtype_low,
+                            scale=scaler.S, check_finite=True,
+                            adj_storage_dtype=ctx.adj_storage_dtype,
+                            graded_time=ctx.graded_time,
+                        )
+                if _is_any_infinite((grad_y0, *grad_params)):
+                    raise OverflowError("Non-finite gradients after adjoint solve.")
+                break
+            except OverflowError:
+                scaler.update_on_overflow()
+                attempts += 1
+        else:
+            raise RuntimeError(
+                f"Predictor FDE dynamic backward exceeded {scaler.max_attempts} attempts."
+            )
 
-        try:
-            attempts = 0
-            while attempts < scaler.max_attempts:
-                try:
-                    with torch.no_grad():
-                        if ctx.predictor_corrector:
-                            grad_y0, grad_params = _predictor_corrector_backward_impl(
-                                ctx.func, at, yt, predictor_t, ctx.tspan, ctx.beta_val,
-                                params, dtype_hi, dtype_low,
-                                scale=scaler.S, check_finite=True,
-                                adj_storage_dtype=ctx.adj_storage_dtype,
-                            )
-                        else:
-                            grad_y0, grad_params = _predictor_backward_impl(
-                                ctx.func, at, yt, ctx.tspan, ctx.beta_val,
-                                params, dtype_hi, dtype_low,
-                                scale=scaler.S, check_finite=True,
-                                adj_storage_dtype=ctx.adj_storage_dtype,
-                                graded_time=ctx.graded_time,
-                            )
-                    if _is_any_infinite((grad_y0, *grad_params)):
-                        raise OverflowError("Non-finite gradients after adjoint solve.")
-                    break
-                except OverflowError:
-                    scaler.update_on_overflow()
-                    attempts += 1
-            else:
-                raise RuntimeError(
-                    f"Predictor FDE dynamic backward exceeded {scaler.max_attempts} attempts."
-                )
-
-            if scaler.check_for_increase(grad_y0):
-                scaler.update_on_small_grad()
-
-        finally:
-            for name, p in ctx.func.named_parameters():
-                p.data = old_params[name]
+        if scaler.check_for_increase(grad_y0):
+            scaler.update_on_small_grad()
 
         return (None, grad_y0, None, None, None, None, None, None, *grad_params)
 
