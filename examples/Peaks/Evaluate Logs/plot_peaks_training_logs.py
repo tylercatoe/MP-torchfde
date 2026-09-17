@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Parse Peaks training logs, plot Train and Test MSE (log scale) across epochs,
-and write a final-metrics summary table.
+Parse one or more Peaks experiments, compare predictor and
+predictor-corrector runs on uniform and graded meshes, plot Train and Test MSE
+across epochs, and write CSV/Markdown final-metrics summaries.
 """
 
 from __future__ import annotations
@@ -22,8 +23,10 @@ EPOCH_RE = re.compile(
     r"Test MSE\s+([0-9.eE+-]+)"
 )
 MODE_RE = re.compile(r"ModeConfig\(name='([^']+)'")
+METHOD_RE = re.compile(r"method='([^']+)'")
 GRADED_RE = re.compile(r"graded_time=(True|False)", re.IGNORECASE)
 PREDICTOR_CORRECTOR_RE = re.compile(r"predictor_corrector=(True|False)", re.IGNORECASE)
+MP_DTYPE_RE = re.compile(r"mp_dtype=(?:torch\.)?([A-Za-z0-9_]+)", re.IGNORECASE)
 METRIC_RE = r"(?:[0-9.eE+-]+|nan|inf|-inf)"
 FINAL_RE = re.compile(
     r"Final Results\s+\|\s+"
@@ -37,7 +40,49 @@ FINAL_RE = re.compile(
 )
 
 
-def parse_log(log_path: Path) -> dict:
+def _logged_bool(pattern: re.Pattern, text: str, default: bool = False) -> bool:
+    match = pattern.search(text)
+    if match is None:
+        return default
+    return match.group(1).lower() == "true"
+
+
+def _precision_name(mode: str, text: str) -> str:
+    # Direct and ordinary adjoint runs are intentionally full float32. Mixed
+    # modes use the logged adjoint-storage dtype.
+    if mode in {"direct", "adjoint"}:
+        return "float32"
+
+    match = MP_DTYPE_RE.search(text)
+    if match:
+        return match.group(1).lower()
+    if mode == "adjoint-mixed-bfloat":
+        return "bfloat16"
+    if mode == "adjoint-mixed":
+        return "float16"
+    return "unknown"
+
+
+def _configuration_label(mode: str, method: str, mesh: str, solver: str, precision: str) -> str:
+    precision_label = {
+        "float16": "FP16",
+        "bfloat16": "BF16",
+        "float32": "FP32",
+        "float64": "FP64",
+    }.get(precision, precision)
+
+    if mode == "direct":
+        method_label = method.replace("-", " ").title()
+        return f"Direct {method_label} · {precision_label}"
+
+    solver_label = {
+        "predictor": "Predictor",
+        "predictor-corrector": "Predictor-Corrector",
+    }.get(solver, solver)
+    return f"{mesh.title()} {solver_label} · {precision_label}"
+
+
+def parse_log(log_path: Path, experiment: str) -> dict:
     text = log_path.read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
 
@@ -50,21 +95,23 @@ def parse_log(log_path: Path) -> dict:
     if mode_name is None:
         mode_name = log_path.stem.replace("_training", "")
 
-    # Training stores each run in its own directory, e.g. ``adjoint`` or
-    # ``graded-adjoint``.  Use that directory name so uniform and graded runs
-    # remain distinct when plotted together.  Fall back to the logged
-    # configuration when a log is supplied from a different layout.
-    run_name = log_path.parent.name
-    if run_name == mode_name or run_name == f"graded-{mode_name}":
-        mode_name = run_name
+    method_match = METHOD_RE.search(text)
+    method = method_match.group(1) if method_match else "unknown"
+    graded_time = _logged_bool(
+        GRADED_RE,
+        text,
+        default=log_path.parent.name.startswith("graded-"),
+    )
+    predictor_corrector = _logged_bool(PREDICTOR_CORRECTOR_RE, text)
+    mesh = "graded" if graded_time else "uniform"
+    if mode_name == "direct":
+        solver = "direct"
+    elif method == "predictor-f":
+        solver = "predictor-corrector" if predictor_corrector else "predictor"
     else:
-        graded_match = GRADED_RE.search(text)
-        if graded_match and graded_match.group(1).lower() == "true":
-            mode_name = f"graded-{mode_name}"
-
-    corrector_match = PREDICTOR_CORRECTOR_RE.search(text)
-    if corrector_match and corrector_match.group(1).lower() == "true":
-        mode_name = f"pc-{mode_name}"
+        solver = method
+    precision = _precision_name(mode_name, text)
+    configuration = _configuration_label(mode_name, method, mesh, solver, precision)
 
     epochs = []
     train_mse = []
@@ -88,7 +135,15 @@ def parse_log(log_path: Path) -> dict:
 
     metrics = {
         "mode": mode_name,
-        "log_file": str(log_path.name),
+        "method": method,
+        "mesh": mesh,
+        "solver": solver,
+        "precision": precision,
+        "predictor_corrector": predictor_corrector,
+        "configuration": configuration,
+        "plot_label": configuration,
+        "experiment": experiment,
+        "log_file": str(log_path),
         "final_test_mse": float(final_match.group(1)),
         "best_test_mse": float(final_match.group(2)),
         "train_memory_mb": float(final_match.group(3)),
@@ -104,7 +159,14 @@ def parse_log(log_path: Path) -> dict:
 
 def write_csv(rows: list[dict], out_path: Path) -> None:
     fieldnames = [
+        "experiment",
+        "configuration",
         "mode",
+        "method",
+        "mesh",
+        "solver",
+        "precision",
+        "predictor_corrector",
         "log_file",
         "final_test_mse",
         "best_test_mse",
@@ -122,7 +184,12 @@ def write_csv(rows: list[dict], out_path: Path) -> None:
 
 def build_fixed_width_summary_table(rows: list[dict]) -> str:
     headers = [
+        "experiment",
+        "configuration",
         "mode",
+        "mesh",
+        "solver",
+        "precision",
         "final_mse",
         "best_mse",
         "train_mem_mb",
@@ -135,7 +202,12 @@ def build_fixed_width_summary_table(rows: list[dict]) -> str:
     for row in rows:
         body.append(
             [
+                row["experiment"],
+                row["configuration"],
                 row["mode"],
+                row["mesh"],
+                row["solver"],
+                row["precision"],
                 f'{row["final_test_mse"]:.6g}',
                 f'{row["best_test_mse"]:.6g}',
                 f'{row["train_memory_mb"]:.2f}',
@@ -171,7 +243,9 @@ def write_markdown(rows: list[dict], out_path: Path) -> None:
         "Log files:",
     ]
     for row in rows:
-        lines.append(f"- {row['mode']}: {row['log_file']}")
+        lines.append(
+            f"- {row['experiment']} / {row['configuration']}: {row['log_file']}"
+        )
 
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -196,22 +270,44 @@ def make_plot(
     metric_key: str,
     plot_every: int,
 ) -> None:
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 7))
+
+    colors = {
+        "float32": "tab:blue",
+        "float16": "tab:orange",
+        "bfloat16": "tab:green",
+    }
+    seen_direct = False
 
     for row in rows:
+        if row["mode"] == "direct":
+            if seen_direct:
+                continue
+            seen_direct = True
         epochs = row["epochs"]
         values = row[metric_key]
         if not epochs:
             continue
         epochs_ds, values_ds = downsample_series(epochs, values, plot_every)
-        plt.plot(epochs_ds, values_ds, linewidth=1.2, label=row["mode"])
+        is_corrector = row["predictor_corrector"]
+        plt.plot(
+            epochs_ds,
+            values_ds,
+            color="black" if row["mode"] == "direct" else colors.get(row["precision"]),
+            linestyle="--" if row["mesh"] == "graded" else "-",
+            linewidth=1.8 if is_corrector else 1.25,
+            marker="o" if is_corrector else None,
+            markevery=max(1, len(epochs_ds) // 10) if is_corrector else None,
+            markersize=3,
+            label=row["plot_label"],
+        )
 
     plt.yscale("log")
     plt.xlabel("Epoch")
     plt.ylabel(ylabel)
     plt.title(title)
     plt.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.5)
-    plt.legend()
+    plt.legend(fontsize=8, ncol=2)
     plt.tight_layout()
     plt.savefig(out_path, dpi=180)
     plt.close()
@@ -224,8 +320,12 @@ def main() -> None:
     parser.add_argument(
         "--logs-dir",
         type=Path,
-        default=default_logs_dir,
-        help="Directory containing training logs (default: this script's directory)",
+        action="append",
+        default=None,
+        help=(
+            "Directory containing training logs. Repeat this option to compare "
+            "multiple experiments. Defaults to examples/Peaks/exp_mp_peaks."
+        ),
     )
     parser.add_argument(
         "--log-glob",
@@ -234,28 +334,38 @@ def main() -> None:
         help="Glob pattern for selecting log files inside --logs-dir",
     )
     parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for generated plots and summaries. By default, a single "
+            "experiment writes to its analysis/ subdirectory; a multi-experiment "
+            "comparison writes under Evaluate Logs/peaks_combined_analysis."
+        ),
+    )
+    parser.add_argument(
         "--plot-out",
         type=Path,
-        default=evaluate_logs_dir / "peaks_train_mse_logscale.png",
-        help="Output PNG path for training-MSE plot",
+        default=None,
+        help="Optional output filename or path for the training-MSE plot",
     )
     parser.add_argument(
         "--test-plot-out",
         type=Path,
-        default=evaluate_logs_dir / "peaks_test_mse_logscale.png",
-        help="Output PNG path for test-MSE plot",
+        default=None,
+        help="Optional output filename or path for the test-MSE plot",
     )
     parser.add_argument(
         "--csv-out",
         type=Path,
-        default=evaluate_logs_dir / "peaks_final_metrics_summary.csv",
-        help="Output CSV path for final metrics summary",
+        default=None,
+        help="Optional output filename or path for the CSV summary",
     )
     parser.add_argument(
         "--md-out",
         type=Path,
-        default=evaluate_logs_dir / "peaks_final_metrics_summary.md",
-        help="Output Markdown path for final metrics summary",
+        default=None,
+        help="Optional output filename or path for the Markdown summary",
     )
     parser.add_argument(
         "--title",
@@ -271,25 +381,63 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logs_dir = args.logs_dir.resolve()
-    log_paths = sorted(logs_dir.glob(args.log_glob))
-    if not log_paths:
+    logs_dirs = [path.resolve() for path in (args.logs_dir or [default_logs_dir])]
+    rows = []
+    matched_paths = set()
+    for logs_dir in logs_dirs:
+        for log_path in sorted(logs_dir.glob(args.log_glob)):
+            resolved_path = log_path.resolve()
+            if resolved_path in matched_paths:
+                continue
+            matched_paths.add(resolved_path)
+            rows.append(parse_log(resolved_path, logs_dir.name))
+
+    if not rows:
+        searched = ", ".join(str(path) for path in logs_dirs)
         raise FileNotFoundError(
-            f"No logs matched '{args.log_glob}' in {logs_dir}. "
+            f"No logs matched '{args.log_glob}' in: {searched}. "
             f"Try passing --logs-dir explicitly, e.g. --logs-dir '{default_logs_dir}'."
         )
 
-    rows = [parse_log(path) for path in log_paths]
-    rows.sort(key=lambda x: x["mode"])
-
-    plot_out = args.plot_out if args.plot_out.is_absolute() else (logs_dir / args.plot_out)
-    test_plot_out = (
-        args.test_plot_out
-        if args.test_plot_out.is_absolute()
-        else (logs_dir / args.test_plot_out)
+    precision_order = {"float32": 0, "float16": 1, "bfloat16": 2}
+    mesh_order = {"uniform": 0, "graded": 1}
+    solver_order = {"direct": 0, "predictor": 1, "predictor-corrector": 2}
+    rows.sort(
+        key=lambda row: (
+            solver_order.get(row["solver"], 3),
+            mesh_order.get(row["mesh"], 2),
+            precision_order.get(row["precision"], 3),
+            row["experiment"],
+        )
     )
-    csv_out = args.csv_out if args.csv_out.is_absolute() else (logs_dir / args.csv_out)
-    md_out = args.md_out if args.md_out.is_absolute() else (logs_dir / args.md_out)
+
+    # If multiple roots contain the same non-direct configuration, include the
+    # experiment directory in its legend entry. Repeated direct baselines are
+    # retained in the tables but drawn only once by make_plot().
+    label_counts = {}
+    for row in rows:
+        label_counts[row["configuration"]] = label_counts.get(row["configuration"], 0) + 1
+    for row in rows:
+        if label_counts[row["configuration"]] > 1 and row["mode"] != "direct":
+            row["plot_label"] = f'{row["configuration"]} [{row["experiment"]}]'
+
+    if args.output_dir is not None:
+        output_dir = args.output_dir.resolve()
+    elif len(logs_dirs) == 1:
+        output_dir = logs_dirs[0] / "analysis"
+    else:
+        output_dir = evaluate_logs_dir / "peaks_combined_analysis"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def output_path(option: Path | None, default_name: str) -> Path:
+        if option is None:
+            return output_dir / default_name
+        return option if option.is_absolute() else output_dir / option
+
+    plot_out = output_path(args.plot_out, "peaks_train_mse_logscale.png")
+    test_plot_out = output_path(args.test_plot_out, "peaks_test_mse_logscale.png")
+    csv_out = output_path(args.csv_out, "peaks_final_metrics_summary.csv")
+    md_out = output_path(args.md_out, "peaks_final_metrics_summary.md")
 
     make_plot(
         rows,
@@ -310,7 +458,9 @@ def main() -> None:
     write_csv(rows, csv_out)
     write_markdown(rows, md_out)
 
-    print(f"Parsed {len(rows)} logs from: {logs_dir}")
+    print(f"Parsed {len(rows)} logs from:")
+    for logs_dir in logs_dirs:
+        print(f"  - {logs_dir}")
     print(f"Plot written to: {plot_out}")
     print(f"Test plot written to: {test_plot_out}")
     print(f"CSV summary written to: {csv_out}")
