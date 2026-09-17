@@ -25,14 +25,14 @@ worse · predictor-corrector · graded · FP16      | adjoint-mixed | 0.00249673
 ```
 
 FP16 memory savings compared with FP32:
-- near_true, predictor, uniform: $33.9\%$
-- near_true, predictor, graded: $34.2\%$
-- near_true, predictor-corrector, uniform: $36.5\%$
-- near_true, predictor-corrector, graded: $36.5\%$
-- worse, predictor, uniform: $33.9\%$
-- worse, predictor, graded: $34.2\%$
-- worse, predictor-corrector, uniform: $36.5\%$
-- worse, predictor-corrector, graded: $36.5\%$
+- near_true, predictor, uniform: $33.9\\%$
+- near_true, predictor, graded: $34.2\\%$
+- near_true, predictor-corrector, uniform: $36.5\\%$
+- near_true, predictor-corrector, graded: $36.5\\%$
+- worse, predictor, uniform: $33.9\\%$
+- worse, predictor, graded: $34.2\\%$
+- worse, predictor-corrector, uniform: $36.5\\%$
+- worse, predictor-corrector, graded: $36.5\\%$
 
 Experiment Parameters:
 - Fractional Lotka--Volterra system:
