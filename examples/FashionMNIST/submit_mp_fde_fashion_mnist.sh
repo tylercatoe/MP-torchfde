@@ -21,7 +21,7 @@ else
   echo "Submitting FULL jobs with epochs=$epochs"
 fi
 
-mkdir -p slurm_logs
+mkdir -p slurm_logs "$script_dir/slurm_logs"
 predictor_corrector="${PREDICTOR_CORRECTOR:-FALSE}"
 echo "Predictor-corrector for adjoint jobs: $predictor_corrector"
 
@@ -68,3 +68,29 @@ job_graded_adjmix_bf16=$(sbatch --parsable --job-name=mp-fashion-mnist-graded-ad
 echo "  job_id=$job_graded_adjmix_bf16"
 
 echo "Submitted 7 jobs in parallel."
+
+dependency="${job_direct}:${job_adj}:${job_adjmix}:${job_adjmix_bf16}:${job_graded_adj}:${job_graded_adjmix}:${job_graded_adjmix_bf16}"
+analysis_script="$script_dir/Evaluate Full Training Logs/plot_fashion_mnist_training_logs.py"
+analysis_env="${ENV_NAME:-torch28}"
+if [[ "$save_root" = /* ]]; then
+  analysis_logs_dir="$save_root"
+else
+  analysis_logs_dir="$script_dir/$save_root"
+fi
+
+if [ ! -f "$analysis_script" ]; then
+  echo "ERROR: analysis script not found: $analysis_script"
+  exit 1
+fi
+
+analysis_job=$(sbatch --parsable \
+  --dependency="afterok:${dependency}" \
+  --job-name=fashion-analysis \
+  --partition=work1 \
+  --time=00:15:00 \
+  --ntasks=1 \
+  --cpus-per-task=1 \
+  --mem=4G \
+  --output="$script_dir/slurm_logs/fashion_analysis_%j.out" \
+  --wrap="bash -lc 'module load anaconda3/2023.09-0 && eval \"\$(conda shell.bash hook)\" && conda run -n \"$analysis_env\" python -u \"$analysis_script\" --logs-dir \"$analysis_logs_dir\"'")
+echo "Analysis job ID: $analysis_job"

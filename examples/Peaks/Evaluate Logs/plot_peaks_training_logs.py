@@ -23,7 +23,7 @@ EPOCH_RE = re.compile(
     r"Test MSE\s+([0-9.eE+-]+)"
 )
 MODE_RE = re.compile(r"ModeConfig\(name='([^']+)'")
-METHOD_RE = re.compile(r"method='([^']+)'")
+METHOD_RE = re.compile(r"(?<![A-Za-z0-9_])method='([^']+)'")
 GRADED_RE = re.compile(r"graded_time=(True|False)", re.IGNORECASE)
 PREDICTOR_CORRECTOR_RE = re.compile(r"predictor_corrector=(True|False)", re.IGNORECASE)
 MP_DTYPE_RE = re.compile(r"mp_dtype=(?:torch\.)?([A-Za-z0-9_]+)", re.IGNORECASE)
