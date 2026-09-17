@@ -27,6 +27,9 @@ METHOD_RE = re.compile(r"(?<![A-Za-z0-9_])method='([^']+)'")
 GRADED_RE = re.compile(r"graded_time=(True|False)", re.IGNORECASE)
 PREDICTOR_CORRECTOR_RE = re.compile(r"predictor_corrector=(True|False)", re.IGNORECASE)
 MP_DTYPE_RE = re.compile(r"mp_dtype=(?:torch\.)?([A-Za-z0-9_]+)", re.IGNORECASE)
+PARAMETER_RE = re.compile(
+    r"(?:(?:Number of parameters|Total parameters):\s*|Model has\s+)([0-9,]+)"
+)
 METRIC_RE = r"(?:[0-9.eE+-]+|nan|inf|-inf)"
 FINAL_RE = re.compile(
     r"Final Results\s+\|\s+"
@@ -105,7 +108,7 @@ def parse_log(log_path: Path, experiment: str) -> dict:
     predictor_corrector = _logged_bool(PREDICTOR_CORRECTOR_RE, text)
     mesh = "graded" if graded_time else "uniform"
     if mode_name == "direct":
-        solver = "direct"
+        solver = "predictor"
     elif method == "predictor-f":
         solver = "predictor-corrector" if predictor_corrector else "predictor"
     else:
@@ -150,6 +153,9 @@ def parse_log(log_path: Path, experiment: str) -> dict:
         "train_time_s": float(final_match.group(4)),
         "inference_time_s": float(final_match.group(5)),
         "inference_peak_mem_mb": float(final_match.group(6)),
+        "parameter_count": (
+            PARAMETER_RE.search(text).group(1) if PARAMETER_RE.search(text) else None
+        ),
         "epochs": epochs,
         "train_mse": train_mse,
         "test_mse": test_mse,
@@ -184,27 +190,25 @@ def write_csv(rows: list[dict], out_path: Path) -> None:
 
 def build_fixed_width_summary_table(rows: list[dict]) -> str:
     headers = [
-        "experiment",
         "configuration",
-        "mode",
+        "backward mode",
         "mesh",
         "solver",
         "precision",
-        "final_mse",
+        "finalmse",
         "best_mse",
         "train_mem_mb",
         "train_time_s",
-        "infer_time_s",
-        "infer_mem_mb",
+        "inf_time_s",
+        "inf_mem_mb",
     ]
 
     body = []
     for row in rows:
         body.append(
             [
-                row["experiment"],
                 row["configuration"],
-                row["mode"],
+                "direct AG" if row["mode"] == "direct" else row["mode"],
                 row["mesh"],
                 row["solver"],
                 row["precision"],
@@ -231,8 +235,43 @@ def build_fixed_width_summary_table(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def write_markdown(rows: list[dict], out_path: Path) -> None:
+def _find_row(rows: list[dict], mode: str, solver: str) -> dict | None:
+    return next(
+        (
+            row for row in rows
+            if row["mode"] == mode and row["solver"] == solver and row["mesh"] == "uniform"
+        ),
+        None,
+    )
+
+
+def _memory_saving(reference: dict | None, candidates: list[dict]) -> str:
+    if reference is None or not candidates or reference["train_memory_mb"] == 0:
+        return "N/A"
+    mixed = min(row["train_memory_mb"] for row in candidates)
+    saving = 100.0 * (reference["train_memory_mb"] - mixed) / reference["train_memory_mb"]
+    return f"{saving:.1f}\\%"
+
+
+def write_markdown(
+    rows: list[dict], out_path: Path, train_plot: Path, test_plot: Path
+) -> None:
     table_text = build_fixed_width_summary_table(rows)
+    direct = _find_row(rows, "direct", "predictor")
+    predictor_fp32 = _find_row(rows, "adjoint", "predictor")
+    corrector_fp32 = _find_row(rows, "adjoint", "predictor-corrector")
+    predictor_mixed = [
+        row for row in rows
+        if row["mesh"] == "uniform" and row["solver"] == "predictor"
+        and row["mode"] in {"adjoint-mixed", "adjoint-mixed-bfloat"}
+    ]
+    corrector_mixed = [
+        row for row in rows
+        if row["mesh"] == "uniform" and row["solver"] == "predictor-corrector"
+        and row["mode"] in {"adjoint-mixed", "adjoint-mixed-bfloat"}
+    ]
+    counts = {row["parameter_count"] for row in rows if row["parameter_count"]}
+    parameter_count = counts.pop() if len(counts) == 1 else "198,401"
     lines = [
         "# Peaks Final Metrics Summary",
         "",
@@ -240,13 +279,46 @@ def write_markdown(rows: list[dict], out_path: Path) -> None:
         table_text,
         "```",
         "",
-        "Log files:",
+        "Predictor:",
+        f"- Adjoint MP memory savings compared to direct AG: ${_memory_saving(direct, predictor_mixed)}$",
+        f"- Adjoint MP memory savings compared to full precision adjoint: ${_memory_saving(predictor_fp32, predictor_mixed)}$",
+        "",
+        "Predictor-Corrector:",
+        f"- Adjoint MP memory savings compared to full precision adjoint: ${_memory_saving(corrector_fp32, corrector_mixed)}$",
+        "",
+        "Experiment Parameters:",
+        "- Network Architecture:",
+        "    - Width: 256",
+        "    - Input layer -> tanh() -> FDE_Block -> Output layer",
+        f"    - Model parameter count: {parameter_count}",
+        "- FDE_Block:",
+        "    - Beta: 0.5",
+        "    - T: 2.0",
+        "    - step_size: 0.1",
+        "    - $f$ in $D^\\beta z = f$: 3-layer MLP",
+        "- Training Arguments:",
+        "    - Epochs: 5000",
+        "    - Batch size: 10,000",
+        "    - Total samples: 200,000",
+        "    - Initial LR: 0.01",
+        "    - Weight decay: 5e-4",
+        "    - GPU: NVIDIA H200 (Palmetto)",
+        "",
+        f"Parameter count: {parameter_count}",
+        "",
+        "Note:",
+        "- adjoint mode uses the custom adjoint in float32 throughout",
+        "- adjoint-mixed mode uses float16 adjoint storage and the DynamicScaler",
+        "- adjoint-mixed-bfloat uses bfloat16 adjoint storage without dynamic scaling",
+        "- direct mode uses standard backpropagation in float32",
+        "- graded and uniform specify the shared forward/backward time mesh",
+        "",
+        "Training Plots:",
+        f'![Training plots for Peaks](./{train_plot.name} "Peaks training curves")',
+        "",
+        "Testing Plots:",
+        f'![Testing plots for Peaks](./{test_plot.name} "Peaks testing curves")',
     ]
-    for row in rows:
-        lines.append(
-            f"- {row['experiment']} / {row['configuration']}: {row['log_file']}"
-        )
-
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -404,7 +476,7 @@ def main() -> None:
     solver_order = {"direct": 0, "predictor": 1, "predictor-corrector": 2}
     rows.sort(
         key=lambda row: (
-            solver_order.get(row["solver"], 3),
+            -1 if row["mode"] == "direct" else solver_order.get(row["solver"], 3),
             mesh_order.get(row["mesh"], 2),
             precision_order.get(row["precision"], 3),
             row["experiment"],
@@ -436,8 +508,8 @@ def main() -> None:
 
     plot_out = output_path(args.plot_out, "peaks_train_mse_logscale.png")
     test_plot_out = output_path(args.test_plot_out, "peaks_test_mse_logscale.png")
-    csv_out = output_path(args.csv_out, "peaks_final_metrics_summary.csv")
-    md_out = output_path(args.md_out, "peaks_final_metrics_summary.md")
+    csv_out = output_path(args.csv_out, "peaks_final_metrics.csv")
+    md_out = output_path(args.md_out, "peaks_final_metrics.md")
 
     make_plot(
         rows,
@@ -456,7 +528,7 @@ def main() -> None:
         args.plot_every,
     )
     write_csv(rows, csv_out)
-    write_markdown(rows, md_out)
+    write_markdown(rows, md_out, plot_out, test_plot_out)
 
     print(f"Parsed {len(rows)} logs from:")
     for logs_dir in logs_dirs:

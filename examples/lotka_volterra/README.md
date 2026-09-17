@@ -8,11 +8,11 @@ D^β x = x (a - c y)
 D^β y = -y (b - d x)
 ```
 
-It compares a uniform mesh with the double-graded mesh, in both FP32 and
-FP16, from two parameter initializations: `near_true` and `worse`. Within each
-initialization regime, all four runs use the same product-rectangle predictor,
-optimizer, beta, data, and train/validation split. The experimental factors
-are initialization, mesh, and precision.
+It compares the predictor and predictor-corrector methods on a uniform mesh
+and the double-graded mesh, in both FP32 and FP16, from two parameter
+initializations: `near_true` and `worse`. Within each initialization regime,
+all runs use the same optimizer, beta, data, and train/validation split. The
+experimental factors are initialization, numerical method, mesh, and precision.
 
 The synthetic targets are generated once per run from the same seeded initial
 conditions using a finer uniform predictor--corrector solve, then independent
@@ -33,38 +33,24 @@ NITERS=10 LOG_FREQ=5 ./run_experiment.sh
 ./run_experiment.sh
 ```
 
-The default experiment uses the predictor only. To run the same experiment
-with the predictor-corrector method, use a separate output directory so the
-predictor results are not overwritten:
-
-```bash
-PREDICTOR_CORRECTOR=1 RESULTS_DIR=results_predictor_corrector ./run_experiment.sh
-```
-
-The launcher runs eight cases:
+The launcher runs all 16 cases: two initializations, two numerical methods,
+two meshes, and two precisions. Its directory layout is:
 
 ```text
-near_true/uniform_fp32
-near_true/graded_fp32
-near_true/uniform_fp16
-near_true/graded_fp16
-worse/uniform_fp32
-worse/graded_fp32
-worse/uniform_fp16
-worse/graded_fp16
+<init_regime>/<method>/<mesh>_<precision>/results.json
 ```
 
 The `near_true` initialization is `[0.99, 0.48, 1.05, 0.33]`; the `worse`
 initialization is `[0.65, 0.75, 1.35, 0.18]`. The true parameters are
 `[1.0, 0.5, 1.0, 0.3]`.
 
-Results are stored in
-`<RESULTS_DIR>/<init_regime>/<mesh>_<precision>/results.json`, where
-`RESULTS_DIR` defaults to `results`.
+`<method>` is either `predictor` or `predictor-corrector`, and `RESULTS_DIR`
+defaults to `results`.
 The launcher also creates the following files under `RESULTS_DIR`:
 
 - `comparison.csv`, which is convenient for pandas or custom plots;
-- `comparison.md`, a compact summary table.
+- `comparison.md`, a full summary with metrics, memory comparisons,
+  experimental parameters, learned parameters, notes, and embedded plots;
 - `validation_loss_vs_iteration.png`, faceted convergence curves;
 - `validation_loss_vs_time.png`, the same curves against estimated
   elapsed time;
@@ -88,7 +74,7 @@ NITERS=1000 NTRAIN=100 NVAL=50 GPU=1 ./run_experiment.sh
 To regenerate the comparison files later:
 
 ```bash
-python compare_results.py --output-dir results results/*/*/results.json
+python compare_results.py --output-dir results
 ```
 
 ## Interpretation

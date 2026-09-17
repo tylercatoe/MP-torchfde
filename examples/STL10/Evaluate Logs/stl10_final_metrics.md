@@ -1,52 +1,53 @@
 # STL10 Final Metrics Summary
 
+## Full Training Metrics
+
 ```text
-mode                 | final_train_acc | final_val_err | best_val_err | train_mem_mb | train_time_s | infer_time_s | infer_mem_mb
----------------------+-----------------+---------------+--------------+--------------+--------------+--------------+-------------
-adjoint              | 0.8672          | 0.295         | 0.288        | 2296.38      | 4553.96      | 1.5000       | 1962.14     
-adjoint-mixed        | 0.8695          | 0.311         | 0.304        | 1209.97      | 3330.27      | 1.1100       | 1034.23     
-adjoint-mixed-bfloat | 0.8818          | 0.299         | 0.291        | 1207.71      | 3122.13      | 1.4700       | 1034.23     
-direct               | 0.8572          | 0.311         | 0.311        | 4299.64      | 4047.21      | 1.7200       | 1130.14     
+configuration            | backward mode        | mesh    | precision | final_acc | best_acc | train_mem_mb | train_time_s | inf_time_s | inf_mem_mb
+-------------------------+----------------------+---------+-----------+-----------+----------+--------------+--------------+------------+-----------
+Direct Predictor · FP32  | direct AG            | uniform | float32   | 0.6890    | 0.6890   | 4299.64      | 4047.21      | 1.72       | 1130.14
+Uniform Predictor · FP32 | adjoint              | uniform | float32   | 0.7050    | 0.7120   | 2296.38      | 4553.96      | 1.50       | 1962.14
+Uniform Predictor · FP16 | adjoint-mixed        | uniform | float16   | 0.6890    | 0.6960   | 1209.97      | 3330.27      | 1.11       | 1034.23
+Uniform Predictor · BF16 | adjoint-mixed-bfloat | uniform | bfloat16  | 0.7010    | 0.7090   | 1207.71      | 3122.13      | 1.47       | 1034.23
 ```
 
-Memory savings: $71.9\\%$ between direct and adjoint MP (adjoint MP uses less)
+Predictor:
+- Adjoint MP memory savings compared to direct AG: $71.9\%$
+- Adjoint MP memory savings compared to full precision adjoint: $47.4\%$
 
-
-
-Log files:
-- adjoint: adj_full_training.log
-- adjoint-mixed: adj_fl16_training.log
-- adjoint-mixed-bfloat: adj_bfl16_training.log
-- direct: dir_training.log
+Predictor-Corrector:
+- Adjoint MP memory savings compared to full precision adjoint: $N/A$
 
 Experiment Parameters:
 - Network Architecture:
-    - Same as Lars but with FDE blocks instead of ODE blocks
-
+    - STL10 convolutional Neural FDE classifier
+    - Width: 128
+    - Model parameter count: 3,144,970
 - FDE_Block:
     - Beta: 0.6
     - T: 1.0
     - step_size: 0.1
-    - $f$ in $D^\beta z = f$: Time-dependent dynamics with piecewise-constant weights (same as Lars')
-
+    - $f$ in $D^\beta z = f$: time-dependent dynamics with piecewise-constant weights
 - Training Arguments:
-    - Downsampling and other things exactly same as Lars
-    - Epochs: 160 
-    - Batch Size: 16
-    - Initial LR: 0.1
+    - Epochs: 160
+    - Batch size: 16
+    - Initial LR: 0.05, decayed by the training schedule
     - Momentum: 0.9
+    - Weight decay: 5e-4
     - GPU: NVIDIA H200 (Palmetto)
 
 Parameter count: 3,144,970
 
-Note: 
-- adjoint mode uses adjoint method for gradients but in high precision
-- adjoint-mixed mode uses adjoint method with float16 for mixed precision (and hence the DynamicScaler)
-- adjoint-mixed-bflat uses adjoint method with bfloat16 for mixed precision (and hence no DynamicScaler)
-- direct mode uses standard backprop with high precision
-    
-Training Plot (every 5 epochs):
-![Training plots for STL10 full experiment](./stl10_train_acc.png "STL10 full training curves")
+Note:
+- These historical metrics contain only the uniform predictor configurations; the updated launcher generates the complete 13-run table.
+- adjoint mode uses the custom adjoint in float32 throughout
+- adjoint-mixed mode uses float16 adjoint storage and the DynamicScaler
+- adjoint-mixed-bfloat uses bfloat16 adjoint storage without dynamic scaling
+- direct mode uses standard backpropagation in float32
+- graded and uniform specify the shared forward/backward time mesh
 
-Testing Plot (every 5 epochs):
-![Testing plots for STL10 full experiment](./stl10_test_acc.png "STL10 full test curves")
+Training Plot (every logged epoch):
+![Training plot for STL10](./stl10_train_acc.png "STL10 training curves")
+
+Validation Accuracy Plot (every logged epoch):
+![Validation plot for STL10](./stl10_test_acc.png "STL10 validation curves")

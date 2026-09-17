@@ -20,14 +20,22 @@ def load_summary(path: str, threshold: float) -> Dict:
         item for item in records if item["val_loss"] <= threshold
     ]
     return {
+        "configuration": (
+            f"{data['init_regime']} · {data.get('method', 'predictor-corrector')} · "
+            f"{data['mesh']} · {data['precision'].upper()}"
+        ),
         "init_regime": data["init_regime"],
         "mesh": data["mesh"],
         "method": data.get("method", "predictor-corrector"),
         "precision": data["precision"],
         "beta": data["beta"],
+        "t_end": data.get("t_end"),
         "step_size": data["step_size"],
+        "data_step_size": data.get("data_step_size"),
         "n_train": data["n_train"],
         "n_val": data["n_val"],
+        "noise_std": data.get("noise_std"),
+        "learning_rate": data.get("learning_rate"),
         "seed": data["seed"],
         "final_iter": final["iter"],
         "final_train_loss": final["train_loss"],
@@ -38,6 +46,11 @@ def load_summary(path: str, threshold: float) -> Dict:
         "peak_mem_mb": max(item["peak_mem_mb"] for item in records),
         "mean_iter_time_s": sum(item["iter_time_s"] for item in records) / len(records),
         "total_logged_time_s": sum(item["iter_time_s"] for item in records),
+        "estimated_train_time_s": (
+            final["iter"]
+            * sum(item["iter_time_s"] for item in records)
+            / len(records)
+        ),
         "iter_to_val_threshold": (
             threshold_records[0]["iter"] if threshold_records else "NA"
         ),
@@ -45,6 +58,7 @@ def load_summary(path: str, threshold: float) -> Dict:
         "initialization_params": ", ".join(
             f"{value:.6f}" for value in data["initialization_params"]
         ),
+        "true_params": ", ".join(f"{value:.6f}" for value in data["true_params"]),
     }
 
 
@@ -112,6 +126,7 @@ def write_convergence_plot(paths: List[str], output_dir: str, x_mode: str) -> bo
         if precision in {run["precision"] for run in runs}
     ]
     colors = {"uniform": "tab:blue", "graded": "tab:orange"}
+    line_styles = {"predictor": "-", "predictor-corrector": "--"}
 
     fig, axes = plt.subplots(
         len(initializations), len(precisions),
@@ -127,7 +142,7 @@ def write_convergence_plot(paths: List[str], output_dir: str, x_mode: str) -> bo
                 if run["init_regime"] == init_regime
                 and run["precision"] == precision
             ]
-            for run in sorted(matching, key=lambda item: item["mesh"]):
+            for run in sorted(matching, key=lambda item: (item.get("method", ""), item["mesh"])):
                 records = run["iterations"]
                 if x_mode == "iteration":
                     x_values = [item["iter"] for item in records]
@@ -143,7 +158,8 @@ def write_convergence_plot(paths: List[str], output_dir: str, x_mode: str) -> bo
                     markersize=3,
                     linewidth=1.8,
                     color=colors.get(run["mesh"], "black"),
-                    label=run["mesh"],
+                    linestyle=line_styles.get(run.get("method", "predictor-corrector"), "-"),
+                    label=f"{run['mesh']} / {run.get('method', 'predictor-corrector')}",
                 )
             ax.set_yscale("log")
             ax.set_xlabel(xlabel)
@@ -178,7 +194,8 @@ def write_parameter_trajectories_plot(paths: List[str], output_dir: str) -> bool
     initializations.extend(sorted(available - set(initializations)))
     parameter_names = ("a", "b", "c", "d")
     colors = {"uniform": "tab:blue", "graded": "tab:orange"}
-    line_styles = {"fp32": "-", "fp16": "--"}
+    line_styles = {"predictor": "-", "predictor-corrector": "--"}
+    markers = {"fp32": None, "fp16": "o"}
     methods = {run.get("method", "predictor-corrector") for run in runs}
     include_method = len(methods) > 1
 
@@ -195,7 +212,7 @@ def write_parameter_trajectories_plot(paths: List[str], output_dir: str) -> bool
         for parameter_index, parameter_name in enumerate(parameter_names):
             ax = axes[row_index][parameter_index]
             for run in sorted(
-                matching, key=lambda item: (item["mesh"], item["precision"])
+                matching, key=lambda item: (item.get("method", ""), item["mesh"], item["precision"])
             ):
                 iterations, parameter_history = _parameter_history(run)
                 values = [params[parameter_index] for params in parameter_history]
@@ -203,7 +220,10 @@ def write_parameter_trajectories_plot(paths: List[str], output_dir: str) -> bool
                     iterations,
                     values,
                     color=colors.get(run["mesh"], "black"),
-                    linestyle=line_styles.get(run["precision"], "-"),
+                    linestyle=line_styles.get(run.get("method", "predictor-corrector"), "-"),
+                    marker=markers.get(run["precision"]),
+                    markevery=max(1, len(iterations) // 8),
+                    markersize=3,
                     linewidth=1.8,
                     label=_line_label(run, include_method),
                 )
@@ -255,7 +275,8 @@ def write_relative_parameter_error_plot(paths: List[str], output_dir: str) -> bo
     initializations = [name for name in preferred_order if name in available]
     initializations.extend(sorted(available - set(initializations)))
     colors = {"uniform": "tab:blue", "graded": "tab:orange"}
-    line_styles = {"fp32": "-", "fp16": "--"}
+    line_styles = {"predictor": "-", "predictor-corrector": "--"}
+    markers = {"fp32": None, "fp16": "o"}
     methods = {run.get("method", "predictor-corrector") for run in runs}
     include_method = len(methods) > 1
 
@@ -272,7 +293,7 @@ def write_relative_parameter_error_plot(paths: List[str], output_dir: str) -> bo
         ax = axes[column_index]
         matching = [run for run in runs if run["init_regime"] == init_regime]
         for run in sorted(
-            matching, key=lambda item: (item["mesh"], item["precision"])
+            matching, key=lambda item: (item.get("method", ""), item["mesh"], item["precision"])
         ):
             iterations, parameter_history = _parameter_history(run)
             true_params = run["true_params"]
@@ -294,7 +315,10 @@ def write_relative_parameter_error_plot(paths: List[str], output_dir: str) -> bo
                 iterations,
                 relative_errors,
                 color=colors.get(run["mesh"], "black"),
-                linestyle=line_styles.get(run["precision"], "-"),
+                linestyle=line_styles.get(run.get("method", "predictor-corrector"), "-"),
+                marker=markers.get(run["precision"]),
+                markevery=max(1, len(iterations) // 8),
+                markersize=3,
                 linewidth=1.8,
                 label=_line_label(run, include_method),
             )
@@ -405,42 +429,120 @@ def write_csv(rows: List[Dict], path: str) -> None:
 
 def write_markdown(rows: List[Dict], path: str, threshold: float) -> None:
     columns = [
-        ("Initialization", "init_regime"),
-        ("Initial parameters [a,b,c,d]", "initialization_params"),
-        ("Mesh", "mesh"),
-        ("Method", "method"),
-        ("Precision", "precision"),
-        ("Final train loss", "final_train_loss"),
-        ("Final val loss", "final_val_loss"),
-        ("Best val loss", "best_val_loss"),
-        ("Final parameter error", "final_param_err"),
-        ("Peak memory (MB)", "peak_mem_mb"),
-        ("Mean logged iteration time (s)", "mean_iter_time_s"),
-        (f"Iteration to val loss ≤ {threshold:g}", "iter_to_val_threshold"),
+        ("configuration", "configuration"),
+        ("final_train", "final_train_loss"),
+        ("final_val", "final_val_loss"),
+        ("best_val", "best_val_loss"),
+        ("best_iter", "best_val_iter"),
+        ("param_err", "final_param_err"),
+        ("peak_mem_mb", "peak_mem_mb"),
+        ("mean_iter_s", "mean_iter_time_s"),
+        ("est_train_s", "estimated_train_time_s"),
+        (f"iter_to_{threshold:g}", "iter_to_val_threshold"),
     ]
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write("# Lotka--Volterra Uniform versus Graded Mesh\n\n")
-        handle.write(
-            "The numerical method used by each run is shown in the table. "
-            "The data, initialization, beta, optimizer, and step size are shared.\n\n"
-        )
-        handle.write("| " + " | ".join(label for label, _ in columns) + " |\n")
-        handle.write("| " + " | ".join("---" for _ in columns) + " |\n")
-        for row in rows:
-            values = []
-            for _, key in columns:
-                value = row[key]
-                if isinstance(value, float):
-                    value = f"{value:.6g}"
-                values.append(str(value))
-            handle.write("| " + " | ".join(values) + " |\n")
 
-        handle.write("\nFinal learned parameters:\n\n")
-        for row in rows:
-            handle.write(
-                f"- `{row['init_regime']}/{row['mesh']}_{row['precision']}`: "
-                f"[{row['final_params']}]\n"
-            )
+    def formatted(value) -> str:
+        return f"{value:.6g}" if isinstance(value, float) else str(value)
+
+    table_rows = [[formatted(row[key]) for _, key in columns] for row in rows]
+    widths = [len(label) for label, _ in columns]
+    for table_row in table_rows:
+        widths = [max(width, len(value)) for width, value in zip(widths, table_row)]
+
+    def render(values: List[str]) -> str:
+        return " | ".join(value.ljust(widths[index]) for index, value in enumerate(values))
+
+    table = "\n".join(
+        [
+            render([label for label, _ in columns]),
+            "-+-".join("-" * width for width in widths),
+            *(render(table_row) for table_row in table_rows),
+        ]
+    )
+
+    first = rows[0]
+    lines = [
+        "# Lotka--Volterra Final Metrics Summary",
+        "",
+        "## Full Training Metrics",
+        "",
+        "```text",
+        table,
+        "```",
+        "",
+        "FP16 memory savings compared with FP32:",
+    ]
+    for init_regime in ("near_true", "worse"):
+        for method in ("predictor", "predictor-corrector"):
+            for mesh in ("uniform", "graded"):
+                matching = [
+                    row for row in rows
+                    if row["init_regime"] == init_regime
+                    and row["method"] == method and row["mesh"] == mesh
+                ]
+                fp32 = next((row for row in matching if row["precision"] == "fp32"), None)
+                fp16 = next((row for row in matching if row["precision"] == "fp16"), None)
+                if fp32 and fp16 and fp32["peak_mem_mb"]:
+                    saving = 100.0 * (fp32["peak_mem_mb"] - fp16["peak_mem_mb"]) / fp32["peak_mem_mb"]
+                    lines.append(f"- {init_regime}, {method}, {mesh}: ${saving:.1f}\\%$")
+
+    lines.extend(
+        [
+            "",
+            "Experiment Parameters:",
+            "- Fractional Lotka--Volterra system:",
+            "    - $D^\\beta x = x(a-cy)$",
+            "    - $D^\\beta y = -y(b-dx)$",
+            f"    - True parameters $[a,b,c,d]$: [{first['true_params']}]",
+            f"    - Beta: {first['beta']}",
+            f"    - T: {first['t_end']}",
+            f"    - Training step size: {first['step_size']}",
+            f"    - Synthetic-data step size: {first['data_step_size']}",
+            "- Training Arguments:",
+            f"    - Iterations: {first['final_iter']}",
+            f"    - Training trajectories: {first['n_train']}",
+            f"    - Validation trajectories: {first['n_val']}",
+            f"    - Noise standard deviation: {first['noise_std']}",
+            f"    - Learning rate: {first['learning_rate']}",
+            f"    - Seed: {first['seed']}",
+            "",
+            "Initialization and Final Learned Parameters:",
+        ]
+    )
+    for row in rows:
+        lines.append(
+            f"- `{row['configuration']}`: initial [{row['initialization_params']}], "
+            f"final [{row['final_params']}]"
+        )
+
+    lines.extend(
+        [
+            "",
+            "Note:",
+            "- All configurations use the same seeded train/validation data and initialization within each initialization regime.",
+            "- Predictor and predictor-corrector are tested independently on uniform and double-graded meshes.",
+            "- FP16 uses the safe mixed-precision custom adjoint; FP32 is the full-precision custom adjoint.",
+            "- `param_err` is the final mean absolute error in the four learned parameters.",
+            "- `est_train_s` extrapolates mean measured iteration time across all training iterations.",
+            "",
+            "Validation Loss versus Iteration:",
+            "![Validation loss versus iteration](./validation_loss_vs_iteration.png)",
+            "",
+            "Validation Loss versus Estimated Time:",
+            "![Validation loss versus time](./validation_loss_vs_time.png)",
+            "",
+            "Parameter Trajectories:",
+            "![Parameter trajectories](./parameter_trajectories.png)",
+            "",
+            "Relative Parameter Error:",
+            "![Relative parameter error](./relative_parameter_error_vs_iteration.png)",
+            "",
+            "Accuracy--Cost Tradeoff:",
+            "![Accuracy cost tradeoff](./accuracy_cost_tradeoff.png)",
+        ]
+    )
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
 
 
 def main() -> None:
@@ -450,13 +552,23 @@ def main() -> None:
     parser.add_argument("--val-threshold", type=float, default=1e-3)
     args = parser.parse_args()
 
+    # Match only the current init/method/config layout. This deliberately
+    # ignores stale result files from the former init/config layout.
     paths = args.results or sorted(
-        glob.glob(os.path.join(args.output_dir, "*", "*", "results.json"))
+        glob.glob(os.path.join(args.output_dir, "*", "*", "*", "results.json"))
     )
     if len(paths) < 2:
         parser.error("provide at least two results.json files")
 
     rows = [load_summary(path, args.val_threshold) for path in paths]
+    init_order = {"near_true": 0, "worse": 1}
+    method_order = {"predictor": 0, "predictor-corrector": 1}
+    mesh_order = {"uniform": 0, "graded": 1}
+    precision_order = {"fp32": 0, "fp16": 1}
+    rows.sort(key=lambda row: (
+        init_order.get(row["init_regime"], 9), method_order.get(row["method"], 9),
+        mesh_order.get(row["mesh"], 9), precision_order.get(row["precision"], 9),
+    ))
     os.makedirs(args.output_dir, exist_ok=True)
     csv_path = os.path.join(args.output_dir, "comparison.csv")
     markdown_path = os.path.join(args.output_dir, "comparison.md")

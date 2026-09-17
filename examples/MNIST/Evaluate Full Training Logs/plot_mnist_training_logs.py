@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the canonical FashionMNIST training report."""
+"""Generate the canonical MNIST training report."""
 
 import sys
 from pathlib import Path
@@ -12,5 +12,5 @@ from analyze_classification_experiment import main  # noqa: E402
 
 if __name__ == "__main__":
     if "--dataset" not in sys.argv:
-        sys.argv[1:1] = ["--dataset", "fashion-mnist"]
+        sys.argv[1:1] = ["--dataset", "mnist"]
     main()
