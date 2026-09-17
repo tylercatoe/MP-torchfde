@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epoch", type=int, default=3, help="Target epoch to extract (typically last epoch)")
     parser.add_argument("--t_values", default="1,2,4,8,16,32,64,128", help="Comma-separated T values")
     parser.add_argument("--output_dir", default=None, help="Output directory (default: manifest directory)")
-    parser.add_argument("--output_prefix", default="fashion_mnist_t_sweep", help="Prefix for output files")
+    parser.add_argument("--output_prefix", default=None, help="Prefix for output files (default includes the solver variant)")
     return parser.parse_args()
 
 
@@ -46,6 +46,57 @@ def parse_t_values(raw: str) -> List[int]:
         if tok:
             out.append(int(tok))
     return out
+
+
+def read_sweep_configuration(manifest_path: str) -> Dict[str, str]:
+    """Read numerical-method metadata, while tolerating legacy manifests."""
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    adjoint_rows = [row for row in rows if row.get("mode") != "direct"]
+    source_rows = adjoint_rows or rows
+
+    def unique_value(field: str, fallback: str) -> str:
+        values = {row.get(field, "").strip() for row in source_rows if row.get(field, "").strip()}
+        if not values:
+            return fallback
+        if len(values) == 1:
+            return next(iter(values))
+        return "mixed"
+
+    mesh = unique_value("mesh", "unspecified")
+    solver = unique_value("solver", "unspecified")
+    predictor_corrector = unique_value("predictor_corrector", "unspecified")
+    if solver == "unspecified" and predictor_corrector != "unspecified":
+        solver = "predictor-corrector" if predictor_corrector.lower() == "true" else "predictor"
+
+    adjoint_method = unique_value("adjoint_method", "unspecified")
+    if mesh == "unspecified" or solver == "unspecified":
+        variant_slug = "legacy_unspecified"
+        display = "Legacy/unspecified solver configuration"
+    else:
+        variant_slug = f"{mesh}_{solver}".replace("-", "_")
+        display = f"{mesh.title()} {solver.replace('_', ' ').replace('-', ' ').title()}"
+
+    scaler_by_mode = []
+    for mode, _ in MODE_ORDER:
+        values = {
+            row.get("loss_scaler", "").strip()
+            for row in rows
+            if row.get("mode") == mode and row.get("loss_scaler", "").strip()
+        }
+        if values:
+            scaler_by_mode.append(f"{mode}={'/'.join(sorted(values))}")
+
+    return {
+        "mesh": mesh,
+        "solver": solver,
+        "predictor_corrector": predictor_corrector,
+        "adjoint_method": adjoint_method,
+        "variant_slug": variant_slug,
+        "display": display,
+        "scaler_by_mode": ", ".join(scaler_by_mode) or "unspecified",
+    }
 
 
 def parse_log_for_epoch(log_path: str, target_epoch: int) -> Optional[Tuple[float, float]]:
@@ -129,15 +180,29 @@ def ratio_value(num: Union[float, str], den: Union[float, str]) -> Union[float, 
 def build_rows(
     metrics: Dict[str, Dict[int, Union[float, str]]],
     t_values: List[int],
+    variant_slug: str,
 ) -> List[Tuple[str, Dict[int, Union[float, str]]]]:
     rows: List[Tuple[str, Dict[int, Union[float, str]]]] = []
-    for mode, label in MODE_ORDER:
+    precision_labels = {
+        "direct": "fp32",
+        "adjoint": "fp32",
+        "adjoint-mixed": "fp16",
+        "adjoint-mixed-bfloat": "bf16",
+    }
+    labels_by_mode: Dict[str, str] = {}
+    for mode, _ in MODE_ORDER:
+        if mode == "direct":
+            label = "direct_fp32"
+        else:
+            label = f"{variant_slug}_{mode.replace('-', '_')}_{precision_labels[mode]}"
+        labels_by_mode[mode] = label
         rows.append((label, {t: metrics[mode][t] for t in t_values}))
 
-    for ratio_label, num_mode, den_mode in RATIO_ROWS:
+    for _, num_mode, den_mode in RATIO_ROWS:
         ratio_row: Dict[int, Union[float, str]] = {}
         for t in t_values:
             ratio_row[t] = ratio_value(metrics[num_mode][t], metrics[den_mode][t])
+        ratio_label = f"{labels_by_mode[num_mode]}/{labels_by_mode[den_mode]}"
         rows.append((ratio_label, ratio_row))
 
     return rows
@@ -175,9 +240,14 @@ def write_markdown_table(
     rows: List[Tuple[str, Dict[int, Union[float, str]]]],
     t_values: List[int],
     kind: str,
+    configuration: Dict[str, str],
 ) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"# {title}\n\n")
+        f.write(f"- Solver configuration: {configuration['display']}\n")
+        f.write(f"- Adjoint method: {configuration['adjoint_method']}\n")
+        f.write(f"- Predictor-corrector: {configuration['predictor_corrector']}\n")
+        f.write(f"- Effective loss scaling: {configuration['scaler_by_mode']}\n\n")
         header = "| method | " + " | ".join(str(t) for t in t_values) + " |\n"
         sep = "|" + "---|" * (len(t_values) + 1) + "\n"
         f.write(header)
@@ -196,19 +266,22 @@ def main() -> None:
     output_dir = args.output_dir or os.path.dirname(os.path.abspath(args.manifest))
     os.makedirs(output_dir, exist_ok=True)
 
+    configuration = read_sweep_configuration(args.manifest)
+    output_prefix = args.output_prefix or f"fashion_mnist_t_sweep_{configuration['variant_slug']}"
     mem_metrics, time_metrics = parse_manifest(args.manifest, args.epoch, t_values)
-    mem_rows = build_rows(mem_metrics, t_values)
-    time_rows = build_rows(time_metrics, t_values)
+    mem_rows = build_rows(mem_metrics, t_values, configuration["variant_slug"])
+    time_rows = build_rows(time_metrics, t_values, configuration["variant_slug"])
 
-    mem_csv = os.path.join(output_dir, f"{args.output_prefix}_memory.csv")
-    time_csv = os.path.join(output_dir, f"{args.output_prefix}_time.csv")
-    mem_md = os.path.join(output_dir, f"{args.output_prefix}_memory.md")
-    time_md = os.path.join(output_dir, f"{args.output_prefix}_time.md")
+    mem_csv = os.path.join(output_dir, f"{output_prefix}_memory.csv")
+    time_csv = os.path.join(output_dir, f"{output_prefix}_time.csv")
+    mem_md = os.path.join(output_dir, f"{output_prefix}_memory.md")
+    time_md = os.path.join(output_dir, f"{output_prefix}_time.md")
 
     write_csv_table(mem_csv, mem_rows, t_values, kind="mem")
     write_csv_table(time_csv, time_rows, t_values, kind="time")
-    write_markdown_table(mem_md, "FashionMNIST T Sweep - Peak Memory (MB)", mem_rows, t_values, kind="mem")
-    write_markdown_table(time_md, "FashionMNIST T Sweep - Epoch Time (s)", time_rows, t_values, kind="time")
+    title_prefix = f"FashionMNIST T Sweep ({configuration['display']})"
+    write_markdown_table(mem_md, f"{title_prefix} - Peak Memory (MB)", mem_rows, t_values, kind="mem", configuration=configuration)
+    write_markdown_table(time_md, f"{title_prefix} - Epoch Time (s)", time_rows, t_values, kind="time", configuration=configuration)
 
     print(f"Wrote: {mem_csv}")
     print(f"Wrote: {time_csv}")
