@@ -1,21 +1,30 @@
 # Peaks Final Metrics Summary
 
+
 ```text
-mode                 | final_mse | best_mse | train_mem_mb | train_time_s | infer_time_s | infer_mem_mb
----------------------+-----------+----------+--------------+--------------+--------------+-------------
-adjoint              | 2.1e-05   | 2.1e-05  | 542.15       | 5834.02      | 0.0093       | 47.43       
-adjoint-mixed        | 7.2e-05   | 7.1e-05  | 293.40       | 4311.43      | 0.0940       | 36.32       
-adjoint-mixed-bfloat | 0.000161  | 0.000144 | 293.40       | 2947.32      | 0.0618       | 36.32       
-direct               | 0.000135  | 0.000132 | 1038.70      | 5576.26      | 0.0137       | 36.20       
+configuration                      | backward mode        | mesh    | solver              | precision | finalmse | best_mse | train_mem_mb | train_time_s | inf_time_s | inf_mem_mb
+-----------------------------------+----------------------+---------+---------------------+-----------+----------+----------+--------------+--------------+------------+-----------
+Direct Predictor · FP32            | direct AG            | uniform | predictor           | float32   | 1.4e-04  | 1.1e-04  | 1038.70      | 5589.46      | 0.0158     | 36.20       
+Uniform Predictor · FP32           | adjoint              | uniform | predictor           | float32   | 2.1e-05  | 2.1e-05  | 542.15       | 5988.17      | 0.0107     | 47.43       
+Uniform Predictor · FP16           | adjoint-mixed        | uniform | predictor           | float16   | 7.2e-05  | 6.8e-05  | 308.05       | 5326.97      | 0.0765     | 36.32       
+Uniform Predictor · BF16           | adjoint-mixed-bfloat | uniform | predictor           | bfloat16  | 1.6e-04  | 1.4e-04  | 293.40       | 2616.10      | 0.0454     | 36.32       
+Graded Predictor · FP32            | adjoint              | graded  | predictor           | float32   | 2.6e-05  | 2.6e-05  | 542.15       | 5692.53      | 0.0094     | 47.43       
+Graded Predictor · FP16            | adjoint-mixed        | graded  | predictor           | float16   | 1.8e-04  | 1.2e-04  | 308.05       | 4125.77      | 0.0676     | 36.32       
+Graded Predictor · BF16            | adjoint-mixed-bfloat | graded  | predictor           | bfloat16  | 1.7e-04  | 1.6e-04  | 293.40       | 2609.66      | 0.1092     | 36.32   
+Uniform Predictor-Corrector · FP32 | adjoint              | uniform | predictor-corrector | float32   | 1.1e-04  | 1.1e-04  | 757.75       | 14401.02     | 0.0267     | 58.66       
+Uniform Predictor-Corrector · FP16 | adjoint-mixed        | uniform | predictor-corrector | float16   | 1.5e-04  | 1.5e-04  | 410.59       | 11247.46     | 0.4996     | 41.93       
+Uniform Predictor-Corrector · BF16 | adjoint-mixed-bfloat | uniform | predictor-corrector | bfloat16  | 3.6e-04  | 2.9e-04  | 401.58       | 6812.89      | 0.0605     | 41.93       
+Graded Predictor-Corrector · FP32  | adjoint              | graded  | predictor-corrector | float32   | 2.5e-05  | 2.4e-05  | 757.75       | 14222.57     | 0.0269     | 58.66       
+Graded Predictor-Corrector · FP16  | adjoint-mixed        | graded  | predictor-corrector | float16   | 2.5e-04  | 2.3e-04  | 410.59       | 12128.30     | 0.0855     | 41.93       
+Graded Predictor-Corrector · BF16  | adjoint-mixed-bfloat | graded  | predictor-corrector | bfloat16  | 1.7e-04  | 1.7e-04  | 401.58       | 6465.99      | 0.0729     | 41.93       
 ```
 
-Memory savings: $71.8\\%$ between direct and adjoint MP (adjoint MP uses less)
+Predictor: 
+- Adjoint MP memory savings compared to direct AG: $71.8\\%$
+- Adjoint MP memory savings compared to full precision adjoint: $45.9\\%$
 
-Log files:
-- adjoint: adj_full_training.log
-- adjoint-mixed: adj_fl16_training.log
-- adjoint-mixed-bfloat: adj_bfl16_training.log
-- direct: dir_training.log
+Predictor-Corrector: 
+- Adjoint MP memory savings compared to full precision adjoint: $47\\%$
 
 Experiment Parameters:
 - Network Architecture:
@@ -43,10 +52,10 @@ Note:
 - adjoint-mixed-bflat uses adjoint method with bfloat16 for mixed precision (and hence no DynamicScaler)
 - direct mode uses standard backprop with high precision
     
-Training Plot (every 50 epochs):
+Training Plots:
 ![Training plots for peaks full experiment](./peaks_train_mse_logscale.png "Peaks full training curves")
 
-Testing Plot (every 50 epochs):
+Testing Plots:
 ![Testing plots for peaks full experiment](./peaks_test_mse_logscale.png "Peaks full testing curves")
 
 

@@ -3,24 +3,32 @@
 ## Full Training Metrics 
 
 ```text
-mode                 | final_train_acc | final_val_err | best_val_err | train_mem_mb | train_time_s | infer_time_s | infer_mem_mb
----------------------+-----------------+---------------+--------------+--------------+--------------+--------------+-------------
-adjoint              | 0.9996          | 0.0845        | 0.0745       | 171.27       | 1647.30      | 0.5900       | 120.24      
-adjoint-mixed        | 0.9996          | 0.0773        | 0.0748       | 159.95       | 2021.81      | 0.7900       | 120.48      
-adjoint-mixed-bfloat | 0.9996          | 0.0836        | 0.0766       | 159.95       | 2336.66      | 0.6700       | 120.48      
-direct               | 0.9997          | 0.0798        | 0.0748       | 221.06       | 1280.29      | 0.7500       | 120.24      
+configuration                      | backward mode        | mesh    | precision | final_acc | best_acc | train_mem_mb | train_time_s | inf_time_s | inf_mem_mb
+-----------------------------------+----------------------+---------+-----------+-----------+----------+--------------+--------------+------------+-----------
+Direct Predictor · FP32            | direct AG            | uniform | float32   | 0.9171    | 0.9245   | 221.06       | 1253.06      | 0.66       | 120.24      
+Uniform Predictor · FP32           | adjoint              | uniform | float32   | 0.9238    | 0.9282   | 166.48       | 1621.35      | 0.69       | 120.24      
+Uniform Predictor · FP16           | adjoint-mixed        | uniform | float16   | 0.9190    | 0.9247   | 161.65       | 2861.05      | 0.69       | 120.48      
+Uniform Predictor · BF16           | adjoint-mixed-bfloat | uniform | bfloat16  | 0.9164    | 0.9234   | 159.95       | 2552.80      | 0.94       | 120.48      
+Graded Predictor · FP32            | adjoint              | graded  | float32   | 0.9237    | 0.9282   | 166.48       | 1997.99      | 0.73       | 120.24      
+Graded Predictor · FP16            | adjoint-mixed        | graded  | float16   | 0.9168    | 0.9203   | 161.65       | 3644.80      | 0.79       | 120.48      
+Graded Predictor · BF16            | adjoint-mixed-bfloat | graded  | bfloat16  | 0.9202    | 0.9229   | 159.95       | 1445.72      | 0.63       | 120.48      
+Uniform Predictor-Corrector · FP32 | adjoint              | uniform | float32   | 0.9180    | 0.9251   | 180.27       | 3102.22      | 1.04       | 120.24      
+Uniform Predictor-Corrector · FP16 | adjoint-mixed        | uniform | float16   | 0.9186    | 0.9237   | 168.40       | 5778.13      | 1.07       | 120.48      
+Uniform Predictor-Corrector · BF16 | adjoint-mixed-bfloat | uniform | bfloat16  | 0.9193    | 0.9256   | 167.56       | 3492.20      | 1.11       | 120.48      
+Graded Predictor-Corrector · FP32  | adjoint              | graded  | float32   | 0.9196    | 0.9233   | 180.27       | 3046.23      | 1.03       | 120.24      
+Graded Predictor-Corrector · FP16  | adjoint-mixed        | graded  | float16   | 0.9203    | 0.9256   | 168.40       | 5437.04      | 1.12       | 120.48      
+Graded Predictor-Corrector · BF16  | adjoint-mixed-bfloat | graded  | bfloat16  | 0.9217    | 0.9261   | 167.56       | 3638.01      | 1.08       | 120.48      
 ```
 
-Memory savings: $27.6\\%$ between direct and adjoint MP (adjoint MP uses less)
-Note that this scales with $T$, see below for savings of up to $86.56\\%$.
+Predictor: 
+- Adjoint MP memory savings compared to direct AG: $27.6\\%$
+    - Note: this scales up to $\\%$ as $T$ increases, see below. 
+- Adjoint MP memory savings compared to full precision adjoint: $3.9\\%$
+    - Note: this scales up to $\\%$ as $T$ increases, see below. 
 
-
-Log files:
-- adjoint: adj_full_logs.txt
-- adjoint-mixed: adj_fl16_full_logs.txt
-- adjoint-mixed-bfloat: adj_bfl16_full_logs.txt
-- direct: dir_full_logs.txt
-
+Predictor-Corrector: 
+- Adjoint MP memory savings compared to full precision adjoint: $7.1\\%$
+    - Note: this scales up to $\\%$ as $T$ increases, see below
 
 Experiment Parameters:
 - Network Architecture:
@@ -45,14 +53,14 @@ Parameter count: 208,266
 Note: 
 - adjoint mode uses adjoint method for gradients but in high precision
 - adjoint-mixed mode uses adjoint method with float16 for mixed precision (and hence the DynamicScaler)
-- adjoint-mixed-bflat uses adjoint method with bfloat16 for mixed precision (and hence no DynamicScaler)
+- adjoint-mixed-bfloat uses adjoint method with bfloat16 for mixed precision (and hence no DynamicScaler)
 - direct mode uses standard backprop with high precision
     
 Training Plot (every epoch):
-![Training plots for Fashion MNIST full experiment](./fashion_mnist_train_acc.png "Fashion MNIST full training curves")
+![Training plots for Fashion MNIST full experiment](./fashion_mnist_train_accuracy.png "Fashion MNIST full training curves")
 
 Test Accuracy Plot (every epoch):
-![Test accuracy plots for Fashion MNIST full experiment](./fashion_mnist_test_acc.png "Fashion MNIST full test curves")
+![Test accuracy plots for Fashion MNIST full experiment](./fashion_mnist_validation_accuracy.png "Fashion MNIST full test curves")
 
 
 ## Fashion MNIST Final Time, T, Sweep Comparisions
