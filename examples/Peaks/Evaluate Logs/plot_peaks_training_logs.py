@@ -330,8 +330,8 @@ def main() -> None:
     parser.add_argument(
         "--log-glob",
         type=str,
-        default="*/training.log",
-        help="Glob pattern for selecting log files inside --logs-dir",
+        default="**/training.log",
+        help="Recursive glob pattern for selecting log files inside --logs-dir",
     )
     parser.add_argument(
         "--output-dir",
