@@ -284,8 +284,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--log-glob",
-        default="**/logs.log",
-        help="Recursive glob used to find training logs inside each experiment directory.",
+        action="append",
+        default=None,
+        help=(
+            "Recursive glob used to find training logs. Repeat for multiple patterns. "
+            "By default both **/logs and **/logs.log are searched."
+        ),
     )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--train-plot-out", type=Path, default=None)
@@ -296,19 +300,22 @@ def main() -> None:
     args = parser.parse_args()
 
     logs_dirs = [path.resolve() for path in (args.logs_dir or [default_logs_dir])]
+    log_globs = args.log_glob or ["**/logs", "**/logs.log"]
     rows = []
     matched_paths = set()
     for logs_dir in logs_dirs:
-        for log_path in sorted(logs_dir.glob(args.log_glob)):
-            resolved_path = log_path.resolve()
-            if resolved_path in matched_paths:
-                continue
-            matched_paths.add(resolved_path)
-            rows.append(parse_log(resolved_path, logs_dir.name))
+        for log_glob in log_globs:
+            for log_path in sorted(logs_dir.glob(log_glob)):
+                resolved_path = log_path.resolve()
+                if resolved_path in matched_paths or not resolved_path.is_file():
+                    continue
+                matched_paths.add(resolved_path)
+                rows.append(parse_log(resolved_path, logs_dir.name))
 
     if not rows:
         searched = ", ".join(str(path) for path in logs_dirs)
-        raise FileNotFoundError(f"No logs matched '{args.log_glob}' in: {searched}")
+        patterns = ", ".join(log_globs)
+        raise FileNotFoundError(f"No logs matched [{patterns}] in: {searched}")
 
     precision_order = {"float32": 0, "float16": 1, "bfloat16": 2}
     mesh_order = {"uniform": 0, "graded": 1}
