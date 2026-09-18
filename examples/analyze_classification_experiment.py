@@ -171,12 +171,8 @@ def parse_log(log_path: Path, experiment: str) -> dict:
         val_acc.append(float(match.group(3)))
         best_acc.append(float(match.group(4)))
 
-    matches = list(FINAL_RE.finditer(text))
-    if not matches:
-        raise ValueError(f"Could not parse final metrics from {log_path}")
-    final = matches[-1]
     parameter_match = PARAMETER_RE.search(text)
-    return {
+    row = {
         "experiment": experiment,
         "configuration": configuration_label(mode, mesh, solver, precision),
         "mode": mode,
@@ -186,35 +182,59 @@ def parse_log(log_path: Path, experiment: str) -> dict:
         "precision": precision,
         "predictor_corrector": corrector,
         "log_file": str(log_path),
-        "final_val_accuracy": 1.0 - float(final.group(1)),
-        "final_val_error": float(final.group(1)),
-        "best_val_accuracy": 1.0 - float(final.group(2)),
-        "best_val_error": float(final.group(2)),
-        "train_memory_mb": float(final.group(3)),
-        "train_time_s": float(final.group(4)),
-        "inference_time_s": float(final.group(5)),
-        "inference_peak_mem_mb": float(final.group(6)),
         "parameter_count": parameter_match.group(1) if parameter_match else None,
         "epochs": epochs,
         "train_acc": train_acc,
         "val_acc": val_acc,
         "plot_label": configuration_label(mode, mesh, solver, precision),
     }
+    matches = list(FINAL_RE.finditer(text))
+    if not matches:
+        row.update(
+            status="FAIL",
+            failure_reason="training log has no Final metrics line",
+            final_val_accuracy=None,
+            final_val_error=None,
+            best_val_accuracy=None,
+            best_val_error=None,
+            train_memory_mb=None,
+            train_time_s=None,
+            inference_time_s=None,
+            inference_peak_mem_mb=None,
+        )
+        return row
+
+    final = matches[-1]
+    row.update(
+        status="ok",
+        failure_reason="",
+        final_val_accuracy=1.0 - float(final.group(1)),
+        final_val_error=float(final.group(1)),
+        best_val_accuracy=1.0 - float(final.group(2)),
+        best_val_error=float(final.group(2)),
+        train_memory_mb=float(final.group(3)),
+        train_time_s=float(final.group(4)),
+        inference_time_s=float(final.group(5)),
+        inference_peak_mem_mb=float(final.group(6)),
+    )
+    return row
 
 
 def fixed_width_table(rows: list[dict]) -> str:
     headers = [
-        "configuration", "backward mode", "mesh", "precision", "final_acc",
+        "configuration", "backward mode", "mesh", "precision", "status", "final_acc",
         "best_acc", "train_mem_mb", "train_time_s", "inf_time_s", "inf_mem_mb",
     ]
     body = [
         [
             row["configuration"],
             "direct AG" if row["mode"] == "direct" else row["mode"],
-            row["mesh"], row["precision"],
-            f'{row["final_val_accuracy"]:.4f}', f'{row["best_val_accuracy"]:.4f}',
-            f'{row["train_memory_mb"]:.2f}', f'{row["train_time_s"]:.2f}',
-            f'{row["inference_time_s"]:.2f}', f'{row["inference_peak_mem_mb"]:.2f}',
+            row["mesh"], row["precision"], row["status"],
+            *( ["F"] * 6 if row["status"] != "ok" else [
+                f'{row["final_val_accuracy"]:.4f}', f'{row["best_val_accuracy"]:.4f}',
+                f'{row["train_memory_mb"]:.2f}', f'{row["train_time_s"]:.2f}',
+                f'{row["inference_time_s"]:.2f}', f'{row["inference_peak_mem_mb"]:.2f}',
+            ]),
         ]
         for row in rows
     ]
@@ -226,7 +246,8 @@ def fixed_width_table(rows: list[dict]) -> str:
 
 
 def memory_saving(reference: dict | None, candidates: list[dict]) -> str:
-    if reference is None or not candidates or reference["train_memory_mb"] == 0:
+    candidates = [row for row in candidates if row["status"] == "ok"]
+    if reference is None or reference["status"] != "ok" or not candidates or reference["train_memory_mb"] == 0:
         return "N/A"
     mixed = min(row["train_memory_mb"] for row in candidates)
     return f'{100.0 * (reference["train_memory_mb"] - mixed) / reference["train_memory_mb"]:.1f}\\%'
@@ -234,7 +255,7 @@ def memory_saving(reference: dict | None, candidates: list[dict]) -> str:
 
 def find_row(rows: list[dict], *, mode: str | None = None, solver: str, mesh: str) -> dict | None:
     return next(
-        (row for row in rows if row["solver"] == solver and row["mesh"] == mesh and (mode is None or row["mode"] == mode)),
+        (row for row in rows if row["status"] == "ok" and row["solver"] == solver and row["mesh"] == mesh and (mode is None or row["mode"] == mode)),
         None,
     )
 
@@ -304,20 +325,27 @@ def write_markdown(rows: list[dict], out_path: Path, profile: Profile, train_plo
         "- adjoint-mixed-bfloat uses bfloat16 adjoint storage without dynamic scaling",
         "- direct mode uses standard backpropagation in float32",
         "- graded and uniform specify the shared forward/backward time mesh",
+    ]
+    failed_rows = [row for row in rows if row["status"] != "ok"]
+    if failed_rows:
+        lines.extend(["", "Failed Configurations:"])
+        for row in failed_rows:
+            lines.append(f'- {row["configuration"]}: {row["failure_reason"]}')
+    lines.extend([
         "",
         "Training Plot (every logged epoch):",
         f'![Training plot for {profile.name}](./{train_plot.name} "{profile.name} training curves")',
         "",
         "Validation Accuracy Plot (every logged epoch):",
         f'![Validation plot for {profile.name}](./{val_plot.name} "{profile.name} validation curves")',
-    ]
+    ])
     out_path.write_text("\n".join(lines).rstrip() + "\n" + suffix, encoding="utf-8")
 
 
 def write_csv(rows: list[dict], out_path: Path) -> None:
     fields = [
         "experiment", "configuration", "mode", "method", "mesh", "solver", "precision",
-        "predictor_corrector", "log_file", "final_val_accuracy", "final_val_error",
+        "predictor_corrector", "status", "failure_reason", "log_file", "final_val_accuracy", "final_val_error",
         "best_val_accuracy", "best_val_error", "train_memory_mb", "train_time_s",
         "inference_time_s", "inference_peak_mem_mb", "parameter_count",
     ]
@@ -342,6 +370,8 @@ def make_plot(rows: list[dict], out_path: Path, profile: Profile, metric: str, y
     plt.figure(figsize=(12, 7))
     colors = {"float32": "tab:blue", "float16": "tab:orange", "bfloat16": "tab:green"}
     for row in rows:
+        if row["status"] != "ok":
+            continue
         if not row["epochs"]:
             continue
         x, y = downsample(row["epochs"], row[metric], stride)
