@@ -21,11 +21,11 @@ Graded Predictor-Corrector · BF16  | adjoint-mixed-bfloat | graded  | bfloat16 
 ```
 
 Predictor:
-- Adjoint MP memory savings compared to direct AG: $71.7\%$
-- Adjoint MP memory savings compared to full precision adjoint: $47.3\%$
+- Adjoint MP memory savings compared to direct AG: $71.7\\%$
+- Adjoint MP memory savings compared to full precision adjoint: $47.3\\%$
 
 Predictor-Corrector:
-- Adjoint MP memory savings compared to full precision adjoint: $48.0\%$
+- Adjoint MP memory savings compared to full precision adjoint: $48.0\\%$
 
 Experiment Parameters:
 - Network Architecture:
